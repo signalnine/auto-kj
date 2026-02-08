@@ -1,0 +1,10 @@
+python-mpv>=1.0.7
+yt-dlp>=2024.0.0
+spleeter>=2.4.0
+openwakeword>=0.6.0
+openai-whisper>=20231117
+pyttsx3>=2.90
+evdev>=1.7.0
+PyAudio>=0.2.14
+numpy>=1.24.0
+requests>=2.28.0

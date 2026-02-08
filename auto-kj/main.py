@@ -204,7 +204,20 @@ class Karaoke:
         sys.exit(0)
 
 
+def _update_ytdlp():
+    """Update yt-dlp to latest version on startup."""
+    import subprocess
+    try:
+        subprocess.run(
+            ["uv", "pip", "install", "-U", "yt-dlp"],
+            capture_output=True, timeout=60,
+        )
+    except Exception:
+        pass  # non-fatal, use whatever version is installed
+
+
 def main():
+    _update_ytdlp()
     config = Config()
     karaoke = Karaoke(config)
     karaoke.run()

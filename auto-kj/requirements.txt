@@ -1,5 +1,5 @@
 python-mpv>=1.0.7
-yt-dlp>=2024.0.0
+yt-dlp  # updated to latest on every startup
 spleeter>=2.4.0
 openwakeword>=0.6.0
 openai-whisper>=20231117

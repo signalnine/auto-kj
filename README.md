@@ -34,18 +34,18 @@ The mic signal path is entirely hardware — Python never touches live audio. Th
 ## Install
 
 ```bash
-# System dependencies
-sudo apt install ffmpeg mpv espeak
-sudo usermod -aG input $USER  # for keyboard capture via evdev
-
-# Python dependencies
-pip install -r auto-kj/requirements.txt
+./install.sh
 ```
+
+This installs system packages (ffmpeg, mpv, espeak-ng), sets up a Python 3.11 venv via [uv](https://docs.astral.sh/uv/), installs all dependencies, and downloads wakeword models.
+
+Python 3.11 is required — Spleeter's TensorFlow dependency doesn't support 3.12+.
 
 ## Run
 
 ```bash
-python3 auto-kj/main.py
+source .venv/bin/activate
+python auto-kj/main.py
 ```
 
 yt-dlp is automatically updated to the latest version on every startup via `uv`.

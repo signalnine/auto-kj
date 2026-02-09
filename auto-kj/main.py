@@ -155,13 +155,18 @@ class Karaoke:
         Always-on stream avoids ALSA device contention. Frames are routed to
         either wakeword detection or command recording based on current state.
         """
-        stream = self._audio.open(
-            format=pyaudio.paInt16,
-            channels=1,
-            rate=SAMPLE_RATE,
-            input=True,
-            frames_per_buffer=FRAME_SIZE,
-        )
+        try:
+            stream = self._audio.open(
+                format=pyaudio.paInt16,
+                channels=1,
+                rate=SAMPLE_RATE,
+                input=True,
+                frames_per_buffer=FRAME_SIZE,
+            )
+        except OSError as e:
+            print(f"Warning: Could not open mic stream: {e}")
+            print("Voice commands will be unavailable.")
+            return
         while self._running:
             data = stream.read(FRAME_SIZE, exception_on_overflow=False)
             frame = np.frombuffer(data, dtype=np.int16)

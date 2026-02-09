@@ -4,7 +4,7 @@ from openwakeword.model import Model
 
 class WakeWordListener:
     def __init__(self, model_name: str = "hey_jarvis", threshold: float = 0.5):
-        self.model = Model()
+        self.model = Model(inference_framework="onnx")
         self.model_name = model_name
         self.threshold = threshold
 

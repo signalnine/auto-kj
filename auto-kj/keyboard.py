@@ -1,4 +1,7 @@
+import logging
 import threading
+
+log = logging.getLogger(__name__)
 
 try:
     from evdev import InputDevice, ecodes, list_devices
@@ -29,11 +32,13 @@ class KeyboardHandler:
 
     def start(self, device_path: str | None = None):
         if not HAS_EVDEV:
-            raise RuntimeError("evdev not available")
+            log.warning("evdev not available — keyboard controls disabled")
+            return
         if device_path is None:
             device_path = self._find_keyboard()
         if device_path is None:
-            raise RuntimeError("No keyboard device found")
+            log.warning("No keyboard device found — keyboard controls disabled")
+            return
         thread = threading.Thread(
             target=self._listen, args=(device_path,), daemon=True
         )

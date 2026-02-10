@@ -66,7 +66,7 @@ Python 3.11 is required (Spleeter's TensorFlow dependency doesn't support 3.12+)
 
 ### Post-install setup
 
-1. **Wakeword model** (optional): Place a custom OpenWakeWord `.onnx` model at `~/.auto-kj/models/hey_karaoke.onnx`. If the model uses external tensor data, include the `.onnx.data` file alongside it. Without a custom model, the built-in OpenWakeWord models are used.
+1. **Wakeword model**: The custom "Hey Karaoke" model is bundled in `models/` and installed automatically by `install.sh` to `~/.auto-kj/models/`. To use a different model, replace the files there or set `AUTOKJ_WAKEWORD_MODEL`.
 
 2. **Claude API** (optional): For AI-powered voice command interpretation (corrects Whisper transcription errors) and joke telling, set your API key:
    ```bash

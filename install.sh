@@ -54,18 +54,17 @@ echo ""
 echo "Downloading wakeword models..."
 .venv/bin/python -c "from openwakeword.utils import download_models; download_models()"
 
-# Create data directories
+# Create data directories and install wakeword model
 mkdir -p ~/.auto-kj/cache
 mkdir -p ~/.auto-kj/models
+cp models/hey_karaoke.onnx models/hey_karaoke.onnx.data ~/.auto-kj/models/
 
 echo ""
 echo "=== Installation complete ==="
 echo ""
 echo "Next steps:"
-echo "  1. Place your wakeword model at ~/.auto-kj/models/hey_karaoke.onnx"
-echo "     (plus .onnx.data if exported with external tensors)"
-echo "  2. Optional: set ANTHROPIC_API_KEY in ~/.env for AI command parsing"
-echo "  3. Run with:"
+echo "  1. Optional: set ANTHROPIC_API_KEY in ~/.env for AI command parsing"
+echo "  2. Run with:"
 echo "       source .venv/bin/activate"
 echo "       python auto-kj/main.py"
 echo "  4. Or install the systemd service:"

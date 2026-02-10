@@ -1,6 +1,8 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+.venv/
+.env
 .ralph_context.md
 .ralph_state.json
 .ralph/

@@ -1,19 +1,26 @@
 [Unit]
 Description=auto-kj Karaoke Machine
-After=network-online.target sound.target graphical.target
-Wants=network-online.target
+After=sound.target
+Wants=sound.target
 
 [Service]
 Type=simple
 User=gabe
 Group=gabe
+SupplementaryGroups=audio input render video
+TTYPath=/dev/tty7
+StandardInput=tty-force
+StandardOutput=journal
+StandardError=journal
 WorkingDirectory=/home/gabe/auto-kj
 ExecStart=/home/gabe/auto-kj/.venv/bin/python /home/gabe/auto-kj/auto-kj/main.py
 Restart=on-failure
 RestartSec=5
-Environment=DISPLAY=:0
-Environment=PULSE_SERVER=unix:/run/user/1000/pulse/native
-Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+LimitRTPRIO=95
+LimitMEMLOCK=infinity
+Environment=HOME=/home/gabe
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/home/gabe/.env
 
 [Install]
-WantedBy=graphical.target
+WantedBy=multi-user.target

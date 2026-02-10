@@ -1,17 +1,51 @@
-import pytest
 import time
+import numpy as np
 from unittest.mock import patch, MagicMock
 import voice.tts as tts_mod
 
 
-@patch("voice.tts.pyttsx3")
-def test_speak(mock_pyttsx3):
-    # Reset module state so the worker starts fresh with our mock
+def _reset_tts():
+    """Reset module state so the worker starts fresh."""
     tts_mod._started = False
-    mock_engine = MagicMock()
-    mock_pyttsx3.init.return_value = mock_engine
+    tts_mod._audio_engine = None
+
+
+@patch("voice.tts.subprocess.run")
+@patch("voice.tts.os.path.exists", return_value=False)
+def test_speak_espeak_fallback(mock_exists, mock_run):
+    _reset_tts()
+    mock_run.return_value = MagicMock(
+        returncode=0,
+        stdout=b'\x00' * 44 + np.zeros(1000, dtype=np.int16).tobytes(),
+    )
     tts_mod.speak("Hello world")
-    # Give the worker thread time to process
-    time.sleep(0.2)
-    mock_engine.say.assert_called_once_with("Hello world")
-    mock_engine.runAndWait.assert_called_once()
+    time.sleep(0.3)
+    # Should have called espeak-ng and then aplay (as fallback)
+    assert mock_run.call_count >= 1
+
+
+@patch("voice.tts.subprocess.run")
+@patch("voice.tts.os.path.exists", return_value=False)
+def test_speak_with_jack_engine(mock_exists, mock_run):
+    _reset_tts()
+    mock_engine = MagicMock()
+    tts_mod.set_audio_engine(mock_engine)
+    mock_run.return_value = MagicMock(
+        returncode=0,
+        stdout=b'\x00' * 44 + np.zeros(1000, dtype=np.int16).tobytes(),
+    )
+    tts_mod.speak("Hello world")
+    time.sleep(0.3)
+    # Should have muted monitor, played through JACK, then unmuted
+    mock_engine.mute_monitor.assert_called()
+    mock_engine.play_buffer.assert_called()
+    mock_engine.unmute_monitor.assert_called()
+    _reset_tts()
+
+
+def test_set_audio_engine():
+    _reset_tts()
+    mock_engine = MagicMock()
+    tts_mod.set_audio_engine(mock_engine)
+    assert tts_mod._audio_engine is mock_engine
+    _reset_tts()

@@ -13,6 +13,7 @@ for mod_name in [
     "openwakeword", "openwakeword.model",
     "whisper",
     "pyaudio",
+    "jack",
 ]:
     if mod_name not in sys.modules:
         sys.modules[mod_name] = MagicMock()

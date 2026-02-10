@@ -1,60 +1,111 @@
-import mpv
+import os
+import subprocess
 import threading
+import time
+
+_MPV_SOCK = "/tmp/auto-kj-mpv.sock"
 
 
 class Player:
     def __init__(self):
-        self._mpv = mpv.MPV(
-            input_default_bindings=False,
-            input_vo_keyboard=False,
-            fullscreen=True,
-            vid="auto",
-        )
+        self._proc: subprocess.Popen | None = None
         self._on_end_callback = None
-        self._mpv.observe_property("idle-active", self._on_idle)
-
-    def _on_idle(self, name, value):
-        if value and self._on_end_callback:
-            self._on_end_callback()
+        self._volume = 100
+        self._paused = False
+        self._lock = threading.Lock()
 
     def on_song_end(self, callback):
         self._on_end_callback = callback
 
     def play(self, song: dict):
+        print(f"[player] Playing: {song.get('title', 'unknown')} type={song.get('source_type')}")
         if song["source_type"] == "karaoke":
-            self._mpv.loadfile(song["video_path"])
+            path = song["video_path"]
         else:
             path = song.get("instrumental_path") or song.get("video_path")
-            self._mpv.loadfile(path)
-            lyrics = song.get("lyrics_path")
-            if lyrics:
-                def add_subs():
-                    import time
-                    time.sleep(0.5)
-                    try:
-                        self._mpv.sub_add(lyrics)
-                    except Exception:
-                        pass
-                threading.Thread(target=add_subs, daemon=True).start()
+        print(f"[player] Loading: {path}")
+        self._start_mpv(path)
+
+    def _start_mpv(self, path: str):
+        with self._lock:
+            self.stop()
+            self._paused = False
+            try:
+                os.unlink(_MPV_SOCK)
+            except FileNotFoundError:
+                pass
+            self._proc = subprocess.Popen(
+                [
+                    "mpv",
+                    "--vo=drm", "--drm-connector=auto",
+                    "--ao=jack",
+                    f"--volume={self._volume}",
+                    f"--input-ipc-server={_MPV_SOCK}",
+                    path,
+                ],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            )
+        threading.Thread(target=self._wait_for_end, daemon=True).start()
+
+    def _wait_for_end(self):
+        proc = self._proc
+        if proc is None:
+            return
+        proc.wait()
+        output = proc.stdout.read().decode(errors="replace") if proc.stdout else ""
+        print(f"[player] mpv exited with code {proc.returncode}")
+        if output.strip():
+            for line in output.strip().split("\n"):
+                print(f"[player] {line.strip()}")
+        with self._lock:
+            if self._proc is proc:
+                self._proc = None
+        if self._on_end_callback:
+            self._on_end_callback()
+
+    def _send_command(self, *args):
+        """Send command to mpv via IPC socket."""
+        import json
+        import socket
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.connect(_MPV_SOCK)
+            cmd = json.dumps({"command": list(args)}) + "\n"
+            sock.sendall(cmd.encode())
+            sock.close()
+        except Exception:
+            pass
 
     def pause(self):
-        self._mpv.pause = True
+        self._paused = True
+        self._send_command("set_property", "pause", True)
 
     def resume(self):
-        self._mpv.pause = False
+        self._paused = False
+        self._send_command("set_property", "pause", False)
 
     def skip(self):
-        self._mpv.stop()
+        self.stop()
+
+    def stop(self):
+        if self._proc and self._proc.poll() is None:
+            self._proc.terminate()
+            try:
+                self._proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self._proc.kill()
 
     def volume_up(self, step: int = 10):
-        self._mpv.volume = min(150, self._mpv.volume + step)
+        self._volume = min(150, self._volume + step)
+        self._send_command("set_property", "volume", self._volume)
 
     def volume_down(self, step: int = 10):
-        self._mpv.volume = max(0, self._mpv.volume - step)
+        self._volume = max(0, self._volume - step)
+        self._send_command("set_property", "volume", self._volume)
 
     @property
     def is_playing(self) -> bool:
-        return not self._mpv.idle_active
+        return self._proc is not None and self._proc.poll() is None
 
     def shutdown(self):
-        self._mpv.terminate()
+        self.stop()

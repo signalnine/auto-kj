@@ -5,8 +5,8 @@ import sys
 import time
 import threading
 import numpy as np
-import pyaudio
 
+from audio import JackAudioEngine, OUTPUT_RATE, FRAME_SIZE
 from config import Config
 from state import KaraokeState, StateMachine
 from queue_manager import SongQueue
@@ -17,10 +17,7 @@ from songs.pipeline import SongPipeline
 from voice.wakeword import WakeWordListener
 from voice.transcribe import transcribe_audio
 from voice.commands import parse_command
-from voice.tts import speak
-
-SAMPLE_RATE = 16000
-FRAME_SIZE = 1280  # 80ms at 16kHz
+from voice.tts import speak, set_audio_engine
 
 
 class Karaoke:
@@ -31,10 +28,10 @@ class Karaoke:
         self.player = Player()
         self.cache = SongCache(config.cache_dir, config.cache_max_bytes)
         self.pipeline = SongPipeline(self.cache, self.queue, speak, config.cache_dir)
-        self.wakeword = WakeWordListener()
+        self.wakeword = WakeWordListener(model_path=config.wakeword_model)
         self.keyboard = KeyboardHandler()
         self._running = False
-        self._audio = pyaudio.PyAudio()
+        self._audio = JackAudioEngine(config)
         self._recording = False
         self._record_frames: list[np.ndarray] = []
 
@@ -79,7 +76,7 @@ class Karaoke:
 
     def _wait_and_process(self):
         """Wait for recording to complete, then transcribe and act."""
-        max_frames = int(SAMPLE_RATE * 5 / FRAME_SIZE)
+        max_frames = int(OUTPUT_RATE * 5 / FRAME_SIZE)
         while len(self._record_frames) < max_frames and self._recording:
             time.sleep(0.05)
         self._recording = False
@@ -89,13 +86,16 @@ class Karaoke:
             return
 
         audio = np.concatenate(self._record_frames)
-        text = transcribe_audio(audio, SAMPLE_RATE, self.config.whisper_model)
+        text = transcribe_audio(audio, OUTPUT_RATE, self.config.whisper_model)
         if not text:
             self.sm.return_from_listening()
             return
 
-        speak(f"I heard: {text}")
-        intent, song = parse_command(text)
+        print(f"[voice] heard: {text}")
+        intent, song = self._claude_parse(text)
+        if intent == "unknown":
+            # API failed, fall back to regex
+            intent, song = parse_command(text)
         self._handle_intent(intent, song)
 
     def _handle_intent(self, intent: str, song: str | None):
@@ -129,11 +129,62 @@ class Karaoke:
         elif intent == "volume_down":
             self.player.volume_down()
             self.sm.return_from_listening()
+        elif intent == "joke":
+            self._tell_joke()
         elif intent == "cancel":
             self.sm.return_from_listening()
         else:
             speak("Sorry, I didn't understand that")
             self.sm.return_from_listening()
+
+    def _tell_joke(self):
+        """Ask Claude for a joke and speak it."""
+        self.sm.return_from_listening()
+        try:
+            import anthropic
+            client = anthropic.Anthropic()
+            msg = client.messages.create(
+                model="claude-sonnet-4-5-20250929",
+                max_tokens=200,
+                messages=[{
+                    "role": "user",
+                    "content": "Tell a short, funny joke. Just the joke, nothing else. Keep it under 2 sentences."
+                }],
+            )
+            joke = msg.content[0].text
+        except Exception as e:
+            print(f"[joke] Claude API error: {e}", flush=True)
+            joke = "Why did the karaoke singer bring a ladder? To reach the high notes."
+        speak(joke)
+
+    def _claude_parse(self, text: str) -> tuple[str, str | None]:
+        """Use Claude to interpret a voice command that regex couldn't parse."""
+        try:
+            import anthropic
+            import json
+            client = anthropic.Anthropic()
+            msg = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=100,
+                messages=[{
+                    "role": "user",
+                    "content": f"""Voice command from a karaoke machine user (may contain transcription errors):
+"{text}"
+
+Valid intents: play <song>, skip, pause, resume, queue, volume_up, volume_down, joke, cancel
+Respond with JSON only: {{"intent": "...", "song": "..." or null}}
+If it sounds like they want to play a song, extract the song name with correct spelling.""",
+                }],
+            )
+            raw = msg.content[0].text.strip()
+            parsed = json.loads(raw)
+            intent = parsed.get("intent", "unknown")
+            song = parsed.get("song")
+            print(f"[claude] corrected '{text}' -> intent={intent}, song={song}", flush=True)
+            return (intent, song)
+        except Exception as e:
+            print(f"[claude] parse error: {e}", flush=True)
+            return ("unknown", None)
 
     def _try_start_playback(self):
         """Check queue and start playing if idle."""
@@ -150,45 +201,38 @@ class Karaoke:
         threading.Thread(target=_check, daemon=True).start()
 
     def _mic_loop(self):
-        """Single shared mic stream for both wakeword and command recording.
+        """Read 16kHz frames from JACK engine for wakeword and command recording.
 
-        Always-on stream avoids ALSA device contention. Frames are routed to
-        either wakeword detection or command recording based on current state.
+        The JackAudioEngine handles mic capture, monitoring, and reverb.
+        This loop receives downsampled 16kHz int16 frames via get_frame().
         """
-        try:
-            stream = self._audio.open(
-                format=pyaudio.paInt16,
-                channels=1,
-                rate=SAMPLE_RATE,
-                input=True,
-                frames_per_buffer=FRAME_SIZE,
-            )
-        except OSError as e:
-            print(f"Warning: Could not open mic stream: {e}")
-            print("Voice commands will be unavailable.")
-            return
+        print("Mic stream opened — listening for wakeword...")
+        frame_count = 0
         while self._running:
-            data = stream.read(FRAME_SIZE, exception_on_overflow=False)
-            frame = np.frombuffer(data, dtype=np.int16)
+            frame = self._audio.get_frame()
+            if frame is None:
+                break
 
             if self._recording:
-                # Route frames to command recording buffer
                 self._record_frames.append(frame)
                 continue
 
             if self.sm.state in (KaraokeState.IDLE, KaraokeState.PAUSED):
-                # Route frames to wakeword detection
                 if self.wakeword.process_frame(frame):
+                    print("Wakeword detected!")
                     self.wakeword.reset()
                     self.sm.transition(KaraokeState.LISTENING)
                     self._listen_for_command()
-
-        stream.stop_stream()
-        stream.close()
+                frame_count += 1
+                if frame_count % 500 == 0:
+                    peak = int(np.max(np.abs(frame)))
+                    print(f"[mic] frames={frame_count}, peak={peak}")
 
     def run(self):
         self._running = True
         os.makedirs(self.config.cache_dir, exist_ok=True)
+        self._audio.start()
+        set_audio_engine(self._audio)
         speak("Karaoke machine ready. Say Hey Karaoke or press spacebar.")
 
         self.keyboard.start()
@@ -203,7 +247,7 @@ class Karaoke:
     def shutdown(self):
         self._running = False
         self.player.shutdown()
-        self._audio.terminate()
+        self._audio.shutdown()
         speak("Goodbye!")
         time.sleep(1)
         sys.exit(0)

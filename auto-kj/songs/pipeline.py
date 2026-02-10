@@ -18,7 +18,7 @@ class SongPipeline:
         results = self.cache.search(song_name)
         if results:
             entry = results[0]
-            self._enqueue_cached(entry)
+            self._enqueue_cached(entry, song_name)
             return
         # Process in background
         thread = threading.Thread(
@@ -26,7 +26,7 @@ class SongPipeline:
         )
         thread.start()
 
-    def _enqueue_cached(self, entry: dict):
+    def _enqueue_cached(self, entry: dict, song_name: str):
         song = {
             "youtube_id": entry["youtube_id"],
             "title": entry["title"],
@@ -36,11 +36,9 @@ class SongPipeline:
             "lyrics_path": os.path.join(self.cache_dir, entry["lyrics_path"]) if entry.get("lyrics_path") else None,
         }
         self.queue.add(song)
-        self.speak(f"Added {entry['title']} to the queue")
+        self.speak(f"Playing {song_name}")
 
     def _process_request(self, song_name: str):
-        self.speak(f"Searching for {song_name}")
-
         result = search_song(song_name)
         if result is None:
             self.speak(f"Sorry, I couldn't find {song_name}")
@@ -49,8 +47,10 @@ class SongPipeline:
         youtube_id = result["id"]
         is_karaoke = result.get("is_karaoke", False)
 
-        # Download
+        # Download — announce and wait for TTS to finish before starting
+        from voice.tts import wait_for_speech
         self.speak(f"Downloading {result.get('title', song_name)}")
+        wait_for_speech()
         try:
             dl = download_song(youtube_id, self.cache_dir)
         except Exception:
@@ -103,4 +103,4 @@ class SongPipeline:
             "lyrics_path": os.path.join(self.cache_dir, lyrics_path) if lyrics_path else None,
         }
         self.queue.add(song)
-        self.speak(f"Added {dl['title']} to the queue")
+        self.speak(f"Playing {song_name}")

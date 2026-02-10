@@ -1,11 +1,14 @@
+import os
 import numpy as np
 from openwakeword.model import Model
 
 
 class WakeWordListener:
-    def __init__(self, model_name: str = "hey_jarvis", threshold: float = 0.5):
-        self.model = Model(inference_framework="onnx")
-        self.model_name = model_name
+    def __init__(self, model_path: str = None, threshold: float = 0.5):
+        if model_path and os.path.exists(model_path):
+            self.model = Model(wakeword_models=[model_path], inference_framework="onnx")
+        else:
+            self.model = Model(inference_framework="onnx")
         self.threshold = threshold
 
     def process_frame(self, frame: np.ndarray) -> bool:

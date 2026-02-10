@@ -13,15 +13,16 @@ fi
 echo ""
 echo "Installing system packages..."
 sudo apt update -qq
-sudo apt install -y ffmpeg mpv espeak-ng portaudio19-dev
+sudo apt install -y ffmpeg mpv espeak-ng jackd2 libjack-jackd2-dev zita-ajbridge
 
-# Add user to input group for keyboard capture
-if ! groups "$USER" | grep -q '\binput\b'; then
-    echo ""
-    echo "Adding $USER to input group (needed for keyboard capture)..."
-    sudo usermod -aG input "$USER"
-    echo "You'll need to log out and back in for this to take effect."
-fi
+# Add user to required groups
+for grp in input audio; do
+    if ! groups "$USER" | grep -q "\b${grp}\b"; then
+        echo "Adding $USER to ${grp} group..."
+        sudo usermod -aG "$grp" "$USER"
+    fi
+done
+echo "(Log out and back in if group membership was changed.)"
 
 # Check for uv
 if ! command -v uv &>/dev/null; then
@@ -53,9 +54,20 @@ echo ""
 echo "Downloading wakeword models..."
 .venv/bin/python -c "from openwakeword.utils import download_models; download_models()"
 
+# Create data directories
+mkdir -p ~/.auto-kj/cache
+mkdir -p ~/.auto-kj/models
+
 echo ""
 echo "=== Installation complete ==="
 echo ""
-echo "Run with:"
-echo "  source .venv/bin/activate"
-echo "  python auto-kj/main.py"
+echo "Next steps:"
+echo "  1. Place your wakeword model at ~/.auto-kj/models/hey_karaoke.onnx"
+echo "     (plus .onnx.data if exported with external tensors)"
+echo "  2. Optional: set ANTHROPIC_API_KEY in ~/.env for AI command parsing"
+echo "  3. Run with:"
+echo "       source .venv/bin/activate"
+echo "       python auto-kj/main.py"
+echo "  4. Or install the systemd service:"
+echo "       sudo cp auto-kj.service /etc/systemd/system/"
+echo "       sudo systemctl enable --now auto-kj"

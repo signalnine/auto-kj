@@ -30,6 +30,10 @@ def parse_command(text: str) -> tuple[str, str | None]:
     if re.match(r"^(cancel|never\s*mind|nevermind)\s*$", t):
         return ("cancel", None)
 
+    # Tell a joke
+    if re.search(r"(tell\s+(me\s+)?a\s+joke|joke)", t):
+        return ("joke", None)
+
     # Play / Sing / Add — extract song name
     m = re.match(
         r"^(?:play|sing|add|put\s+on|i\s+want\s+to\s+(?:hear|sing))\s+(.+?)(?:\s+to\s+the\s+queue)?\s*$",

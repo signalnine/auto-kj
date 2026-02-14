@@ -18,7 +18,7 @@ _audio_engine = None
 
 
 def set_audio_engine(engine):
-    """Register the JACK audio engine for playback and monitor muting."""
+    """Register the JACK audio engine for playback."""
     global _audio_engine
     _audio_engine = engine
 
@@ -72,11 +72,7 @@ def _worker():
                 continue
 
             if _audio_engine:
-                _audio_engine.mute_monitor()
-                try:
-                    _audio_engine.play_buffer(audio, source_rate)
-                finally:
-                    _audio_engine.unmute_monitor()
+                _audio_engine.play_buffer(audio, source_rate)
             else:
                 # Fallback: pipe to aplay if no JACK engine
                 subprocess.run(

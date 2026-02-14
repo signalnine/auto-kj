@@ -3,7 +3,10 @@
 import os
 import sys
 import time
+import wave
 import threading
+import collections
+from datetime import datetime
 import numpy as np
 
 from audio import JackAudioEngine, OUTPUT_RATE, FRAME_SIZE
@@ -34,6 +37,7 @@ class Karaoke:
         self._audio = JackAudioEngine(config)
         self._recording = False
         self._record_frames: list[np.ndarray] = []
+        self._clip_buffer: collections.deque[np.ndarray] = collections.deque(maxlen=25)
 
         self._setup_callbacks()
 
@@ -44,6 +48,7 @@ class Karaoke:
         self.keyboard.on("up", self.player.volume_up)
         self.keyboard.on("down", self.player.volume_down)
         self.keyboard.on("q", self.shutdown)
+        self.keyboard.on("w", self._save_missed_clip)
 
     def _on_song_end(self):
         song = self.queue.next()
@@ -226,6 +231,28 @@ If it sounds like they want to play a song, extract the song name with correct s
                 time.sleep(2)
         threading.Thread(target=_check, daemon=True).start()
 
+    def _save_clip(self, tag: str, extra_frames: list[np.ndarray] | None = None):
+        """Save the rolling buffer (+ optional extra frames) as a WAV clip."""
+        frames = list(self._clip_buffer)
+        if extra_frames:
+            frames.extend(extra_frames)
+        if not frames:
+            return
+        os.makedirs(self.config.clips_dir, exist_ok=True)
+        ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        path = os.path.join(self.config.clips_dir, f"{ts}_{tag}.wav")
+        audio = np.concatenate(frames)
+        with wave.open(path, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(OUTPUT_RATE)
+            wf.writeframes(audio.tobytes())
+        print(f"[clip] saved {path} ({len(audio) / OUTPUT_RATE:.1f}s)")
+
+    def _save_missed_clip(self):
+        """Keyboard shortcut handler: save current buffer as a missed wakeword clip."""
+        self._save_clip("missed")
+
     def _mic_loop(self):
         """Read 16kHz frames from JACK engine for wakeword and command recording.
 
@@ -239,6 +266,8 @@ If it sounds like they want to play a song, extract the song name with correct s
             if frame is None:
                 break
 
+            self._clip_buffer.append(frame)
+
             if self._recording:
                 self._record_frames.append(frame)
                 continue
@@ -247,6 +276,19 @@ If it sounds like they want to play a song, extract the song name with correct s
                 if self.wakeword.process_frame(frame):
                     print("Wakeword detected!")
                     self.wakeword.reset()
+                    # Collect ~0.5s of post-detection audio for the clip
+                    post_frames = []
+                    for _ in range(6):
+                        pf = self._audio.get_frame()
+                        if pf is None:
+                            break
+                        self._clip_buffer.append(pf)
+                        post_frames.append(pf)
+                    threading.Thread(
+                        target=self._save_clip,
+                        args=("detected", post_frames),
+                        daemon=True,
+                    ).start()
                     self.sm.transition(KaraokeState.LISTENING)
                     self._listen_for_command()
                 frame_count += 1

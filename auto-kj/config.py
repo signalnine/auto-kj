@@ -11,9 +11,7 @@ class Config:
     jack_device: str = field(default=None)
     jack_mic_device: str = field(default=None)
     jack_period: int = field(default=None)
-    mic_gain: float = field(default=None)
-    reverb_wet: float = field(default=None)
-    monitor_enabled: bool = field(default=None)
+    clips_dir: str = field(default=None)
 
     def __post_init__(self):
         if self.cache_dir is None:
@@ -29,9 +27,5 @@ class Config:
             self.jack_mic_device = os.environ.get("AUTOKJ_JACK_MIC_DEVICE", "hw:2")
         if self.jack_period is None:
             self.jack_period = int(os.environ.get("AUTOKJ_JACK_PERIOD", "256"))
-        if self.mic_gain is None:
-            self.mic_gain = float(os.environ.get("AUTOKJ_MIC_GAIN", "2.0"))
-        if self.reverb_wet is None:
-            self.reverb_wet = float(os.environ.get("AUTOKJ_REVERB_WET", "0.1"))
-        if self.monitor_enabled is None:
-            self.monitor_enabled = os.environ.get("AUTOKJ_MONITOR_ENABLED", "1") == "1"
+        if self.clips_dir is None:
+            self.clips_dir = os.environ.get("AUTOKJ_CLIPS_DIR", os.path.expanduser("~/.auto-kj/clips"))

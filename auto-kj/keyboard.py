@@ -11,6 +11,7 @@ try:
         ecodes.KEY_UP: "up",
         ecodes.KEY_DOWN: "down",
         ecodes.KEY_Q: "q",
+        ecodes.KEY_W: "w",
     }
     HAS_EVDEV = True
 except (ImportError, AttributeError):

@@ -49,7 +49,8 @@ class SongPipeline:
 
         # Download — announce and wait for TTS to finish before starting
         from voice.tts import wait_for_speech
-        self.speak(f"Downloading {result.get('title', song_name)}")
+        title = result.get('title', song_name)
+        self.speak(f"Downloading {title}")
         wait_for_speech()
         try:
             dl = download_song(youtube_id, self.cache_dir)

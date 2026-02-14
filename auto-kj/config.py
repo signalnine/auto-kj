@@ -24,13 +24,13 @@ class Config:
             self.wakeword_model = os.environ.get("AUTOKJ_WAKEWORD_MODEL",
                 os.path.expanduser("~/.auto-kj/models/hey_karaoke.onnx"))
         if self.jack_device is None:
-            self.jack_device = os.environ.get("AUTOKJ_JACK_DEVICE", "hw:0,8")
+            self.jack_device = os.environ.get("AUTOKJ_JACK_DEVICE", "hw:1,0")
         if self.jack_mic_device is None:
             self.jack_mic_device = os.environ.get("AUTOKJ_JACK_MIC_DEVICE", "hw:2")
         if self.jack_period is None:
             self.jack_period = int(os.environ.get("AUTOKJ_JACK_PERIOD", "256"))
         if self.mic_gain is None:
-            self.mic_gain = float(os.environ.get("AUTOKJ_MIC_GAIN", "1.2"))
+            self.mic_gain = float(os.environ.get("AUTOKJ_MIC_GAIN", "2.0"))
         if self.reverb_wet is None:
             self.reverb_wet = float(os.environ.get("AUTOKJ_REVERB_WET", "0.1"))
         if self.monitor_enabled is None:

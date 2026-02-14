@@ -23,7 +23,7 @@ class SchroederReverb:
         self.wet = wet
         # Comb filter delays (in samples) tuned for 48kHz
         comb_delays = [int(d * rate / 44100) for d in [1557, 1617, 1491, 1422]]
-        comb_gains = [0.84, 0.80, 0.77, 0.74]
+        comb_gains = [0.74, 0.71, 0.68, 0.65]
         self._combs = [
             (np.zeros(d, dtype=np.float32), d, g, 0)
             for d, g in zip(comb_delays, comb_gains)
@@ -54,6 +54,8 @@ class SchroederReverb:
             self._combs[i] = (buf, delay, gain, pos)
             comb_sum += out
 
+        # Normalize comb sum to prevent clipping
+        comb_sum *= 0.25
         # Series allpass filters
         sig = comb_sum
         for i, (buf, delay, gain, pos) in enumerate(self._allpasses):
@@ -66,7 +68,8 @@ class SchroederReverb:
             self._allpasses[i] = (buf, delay, gain, pos)
             sig = out
 
-        return block * (1.0 - self.wet) + sig * self.wet
+        result = block * (1.0 - self.wet) + sig * self.wet
+        return np.clip(result, -1.0, 1.0)
 
 
 class JackAudioEngine:

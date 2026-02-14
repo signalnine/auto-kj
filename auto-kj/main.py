@@ -75,16 +75,39 @@ class Karaoke:
         threading.Thread(target=self._wait_and_process, daemon=True).start()
 
     def _wait_and_process(self):
-        """Wait for recording to complete, then transcribe and act."""
+        """Wait for recording to complete, then transcribe and act.
+
+        Uses energy-based VAD: stop after 0.8s of silence once speech is detected.
+        """
         max_frames = int(OUTPUT_RATE * 5 / FRAME_SIZE)
+        silence_threshold = 300  # int16 amplitude
+        silence_frames = 0
+        silence_limit = int(OUTPUT_RATE * 0.8 / FRAME_SIZE)  # 0.8s of silence
+        heard_speech = False
+        last_count = 0
+
         while len(self._record_frames) < max_frames and self._recording:
             time.sleep(0.05)
+            # Check new frames for silence detection
+            current_count = len(self._record_frames)
+            if current_count > last_count:
+                for frame in self._record_frames[last_count:current_count]:
+                    peak = int(np.max(np.abs(frame)))
+                    if peak > silence_threshold:
+                        heard_speech = True
+                        silence_frames = 0
+                    elif heard_speech:
+                        silence_frames += 1
+                last_count = current_count
+                if heard_speech and silence_frames >= silence_limit:
+                    break
         self._recording = False
 
         if not self._record_frames:
             self.sm.return_from_listening()
             return
 
+        speak("Searching...")
         audio = np.concatenate(self._record_frames)
         text = transcribe_audio(audio, OUTPUT_RATE, self.config.whisper_model)
         if not text:
@@ -164,7 +187,7 @@ class Karaoke:
             import json
             client = anthropic.Anthropic()
             msg = client.messages.create(
-                model="claude-haiku-4-5-20251001",
+                model="claude-sonnet-4-5-20250929",
                 max_tokens=100,
                 messages=[{
                     "role": "user",
@@ -177,6 +200,9 @@ If it sounds like they want to play a song, extract the song name with correct s
                 }],
             )
             raw = msg.content[0].text.strip()
+            # Strip markdown code fences if present
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
             parsed = json.loads(raw)
             intent = parsed.get("intent", "unknown")
             song = parsed.get("song")

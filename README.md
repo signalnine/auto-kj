@@ -1,6 +1,6 @@
 # auto-kj
 
-Voice-controlled karaoke machine. Say a song name, it finds it on YouTube, strips the vocals if needed, and plays it on your TV. Sing through a USB mic with real-time software reverb.
+Voice-controlled karaoke machine. Say a song name, it finds it on YouTube, strips the vocals if needed, and plays it on your TV. Sing through a USB mic with hardware or software reverb monitoring.
 
 ## How it works
 
@@ -18,20 +18,34 @@ If no karaoke version exists, it downloads the original, runs Spleeter to strip 
 
 ```
 Mini PC (N100) --HDMI--> TV/Monitor with speakers
-USB Mic -----> Mini PC (JACK audio engine)
+USB Mic -----> Mic Amp (optional) -----> Mini PC (JACK audio engine)
 ```
 
-Everything runs on a single mini PC. The USB mic is captured through JACK with real-time Schroeder reverb applied in software, mixed with karaoke playback, and output through HDMI to the TV speakers. No external audio hardware needed beyond the mic.
+Two monitoring modes are supported, controlled by `AUTOKJ_MONITOR_MODE`:
+
+- **`hardware`** (default): USB mic goes through an external mic amp that handles monitoring and reverb. JACK only captures audio for wakeword/whisper.
+- **`software`**: JACK applies gain and Schroeder reverb in software, routing the processed mic signal to the speakers. No external amp needed.
 
 **What you need:**
 - Mini PC (Intel N100 or similar) running Debian/Ubuntu
 - TV or monitor with HDMI audio (or separate speakers on a second ALSA device)
 - USB microphone
+- Mic amp with monitoring/reverb (hardware mode), or nothing extra (software mode)
 
 ## Audio architecture
 
 JACK provides low-latency audio routing and mixing. All audio sources are mixed to the HDMI output automatically.
 
+**Hardware mode** (default) — mic amp handles monitoring:
+```
+USB Mic --> Mic Amp (monitoring/reverb) --> speakers
+        \-> [zita-a2j] --> JACK capture --> [downsample 48k->16k] --> wakeword / whisper
+
+system:playback  <-- mpv (--ao=jack)
+                 <-- TTS (JACK client)
+```
+
+**Software mode** — JACK handles monitoring:
 ```
 USB Mic (hw:2) --> [zita-a2j] --> JACK capture
                                       |
@@ -44,14 +58,14 @@ USB Mic (hw:2) --> [zita-a2j] --> JACK capture
                                                                   <-- TTS (JACK client)
 ```
 
-| Segment | Latency |
+| Segment | Latency (software mode) |
 |---------|---------|
 | USB mic -> zita-a2j | ~5-10ms |
 | JACK processing (1 period) | ~5ms |
 | JACK -> HDMI output (2 periods) | ~11ms |
 | **Total mic-to-speaker** | **~21-26ms** |
 
-The reverb is a Schroeder design (4 comb + 2 allpass filters) running on 256-sample blocks at 48kHz. Mic monitoring is automatically muted during TTS to prevent feedback.
+In software mode, the reverb is a Schroeder design (4 comb + 2 allpass filters) running on 256-sample blocks at 48kHz. Mic monitoring is automatically muted during TTS to prevent feedback.
 
 ## Install
 
@@ -147,9 +161,9 @@ All settings via environment variables (or `~/.env` when running as a service):
 | `AUTOKJ_JACK_DEVICE` | `hw:0,8` | ALSA device for JACK playback (HDMI output) |
 | `AUTOKJ_JACK_MIC_DEVICE` | `hw:2` | ALSA device for USB mic (via zita-a2j) |
 | `AUTOKJ_JACK_PERIOD` | `256` | JACK period size (frames) |
-| `AUTOKJ_MIC_GAIN` | `1.2` | Mic gain multiplier |
-| `AUTOKJ_REVERB_WET` | `0.1` | Reverb wet/dry mix (0.0 = dry, 1.0 = full reverb) |
-| `AUTOKJ_MONITOR_ENABLED` | `1` | Enable mic monitoring (0 to disable) |
+| `AUTOKJ_MONITOR_MODE` | `hardware` | Monitor mode: `hardware` (external amp) or `software` (JACK reverb) |
+| `AUTOKJ_MIC_GAIN` | `2.0` | Mic gain multiplier (software mode only) |
+| `AUTOKJ_REVERB_WET` | `0.1` | Reverb wet/dry mix, 0.0-1.0 (software mode only) |
 | `ANTHROPIC_API_KEY` | -- | Claude API key for command parsing and jokes |
 
 Find your ALSA devices with `aplay -l` (playback) and `arecord -l` (capture).
@@ -199,7 +213,7 @@ auto-kj/
     lyrics.py      # LRCLIB synced lyrics
     cache.py       # SQLite cache with LRU eviction
     pipeline.py    # Orchestrates search -> download -> separate -> cache -> queue
-tests/             # 82 tests, all mocked (no hardware needed)
+tests/             # 88 tests, all mocked (no hardware needed)
 auto-kj.service    # systemd unit file
 install.sh         # One-step installer
 ```
@@ -210,7 +224,7 @@ install.sh         # One-step installer
 python3 -m pytest tests/ -v
 ```
 
-82 tests, all mocked for external dependencies (no mic, speakers, internet, or GPU needed). The test suite mocks JACK, evdev, mpv, spleeter, whisper, and openwakeword at the `sys.modules` level via `conftest.py`.
+88 tests, all mocked for external dependencies (no mic, speakers, internet, or GPU needed). The test suite mocks JACK, evdev, mpv, spleeter, whisper, and openwakeword at the `sys.modules` level via `conftest.py`.
 
 ## Troubleshooting
 

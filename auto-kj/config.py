@@ -12,6 +12,10 @@ class Config:
     jack_mic_device: str = field(default=None)
     jack_period: int = field(default=None)
     clips_dir: str = field(default=None)
+    # Monitor mode: "software" (SchroederReverb via JACK) or "hardware" (external amp)
+    monitor_mode: str = field(default=None)
+    mic_gain: float = field(default=None)
+    reverb_wet: float = field(default=None)
 
     def __post_init__(self):
         if self.cache_dir is None:
@@ -29,3 +33,9 @@ class Config:
             self.jack_period = int(os.environ.get("AUTOKJ_JACK_PERIOD", "256"))
         if self.clips_dir is None:
             self.clips_dir = os.environ.get("AUTOKJ_CLIPS_DIR", os.path.expanduser("~/.auto-kj/clips"))
+        if self.monitor_mode is None:
+            self.monitor_mode = os.environ.get("AUTOKJ_MONITOR_MODE", "hardware")
+        if self.mic_gain is None:
+            self.mic_gain = float(os.environ.get("AUTOKJ_MIC_GAIN", "2.0"))
+        if self.reverb_wet is None:
+            self.reverb_wet = float(os.environ.get("AUTOKJ_REVERB_WET", "0.1"))

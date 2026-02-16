@@ -72,7 +72,11 @@ def _worker():
                 continue
 
             if _audio_engine:
-                _audio_engine.play_buffer(audio, source_rate)
+                _audio_engine.mute_monitor()
+                try:
+                    _audio_engine.play_buffer(audio, source_rate)
+                finally:
+                    _audio_engine.unmute_monitor()
             else:
                 # Fallback: pipe to aplay if no JACK engine
                 subprocess.run(

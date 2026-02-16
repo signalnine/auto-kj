@@ -13,6 +13,65 @@ OUTPUT_RATE = 16000
 FRAME_SIZE = 1280  # 80ms at 16kHz
 
 
+class SchroederReverb:
+    """Simple Schroeder reverb: 4 comb filters + 2 allpass filters.
+
+    Operates on float32 mono blocks at 48kHz.
+    """
+
+    def __init__(self, rate: int = JACK_RATE, wet: float = 0.3):
+        self.wet = wet
+        # Comb filter delays (in samples) tuned for 48kHz
+        comb_delays = [int(d * rate / 44100) for d in [1557, 1617, 1491, 1422]]
+        comb_gains = [0.74, 0.71, 0.68, 0.65]
+        self._combs = [
+            (np.zeros(d, dtype=np.float32), d, g, 0)
+            for d, g in zip(comb_delays, comb_gains)
+        ]
+        # Allpass filter delays
+        ap_delays = [int(d * rate / 44100) for d in [225, 556]]
+        ap_gain = 0.5
+        self._allpasses = [
+            (np.zeros(d, dtype=np.float32), d, ap_gain, 0)
+            for d in ap_delays
+        ]
+
+    def process(self, block: np.ndarray) -> np.ndarray:
+        """Process a mono float32 block, return wet/dry mix."""
+        if self.wet <= 0:
+            return block
+
+        n = len(block)
+        comb_sum = np.zeros(n, dtype=np.float32)
+
+        # Parallel comb filters
+        for i, (buf, delay, gain, pos) in enumerate(self._combs):
+            out = np.empty(n, dtype=np.float32)
+            for j in range(n):
+                out[j] = buf[pos]
+                buf[pos] = block[j] + gain * buf[pos]
+                pos = (pos + 1) % delay
+            self._combs[i] = (buf, delay, gain, pos)
+            comb_sum += out
+
+        # Normalize comb sum to prevent clipping
+        comb_sum *= 0.25
+        # Series allpass filters
+        sig = comb_sum
+        for i, (buf, delay, gain, pos) in enumerate(self._allpasses):
+            out = np.empty(n, dtype=np.float32)
+            for j in range(n):
+                delayed = buf[pos]
+                buf[pos] = sig[j] + gain * delayed
+                out[j] = delayed - gain * sig[j]
+                pos = (pos + 1) % delay
+            self._allpasses[i] = (buf, delay, gain, pos)
+            sig = out
+
+        result = block * (1.0 - self.wet) + sig * self.wet
+        return np.clip(result, -1.0, 1.0)
+
+
 class JackAudioEngine:
     """Manages JACK server, zita-a2j bridge, and provides downsampled
     16kHz frames for wakeword/whisper."""
@@ -22,6 +81,13 @@ class JackAudioEngine:
         self._jack_proc: subprocess.Popen | None = None
         self._zita_proc: subprocess.Popen | None = None
         self._client = None
+
+        # Software monitoring (SchroederReverb through JACK monitor ports)
+        self._software_monitor = config.monitor_mode == "software"
+        if self._software_monitor:
+            self._reverb = SchroederReverb(JACK_RATE, config.reverb_wet)
+            self._gain = config.mic_gain
+            self._monitor_muted = False
 
         # Downsample buffer: accumulate 48kHz samples, output 16kHz frames
         self._ds_buf = np.array([], dtype=np.float32)
@@ -39,6 +105,8 @@ class JackAudioEngine:
         self._start_zita()
         time.sleep(0.5)
         self._start_client()
+        mode = "software" if self._software_monitor else "hardware"
+        print(f"[audio] monitor mode: {mode}")
 
     def _wait_for_jack(self, timeout: float = 10.0):
         """Poll until JACK server is accepting connections."""
@@ -93,6 +161,9 @@ class JackAudioEngine:
 
         # Register ports
         self._mic_in = client.inports.register("mic_in")
+        if self._software_monitor:
+            self._monitor_L = client.outports.register("monitor_L")
+            self._monitor_R = client.outports.register("monitor_R")
 
         client.activate()
         self._client = client
@@ -109,12 +180,31 @@ class JackAudioEngine:
             if zita_ports:
                 client.connect(zita_ports[0], self._mic_in)
                 print(f"[audio] connected {zita_ports[0].name} -> auto-kj:mic_in")
+
+            # Software mode: connect monitor outputs -> system playback
+            if self._software_monitor:
+                sys_play = client.get_ports("system", is_input=True, is_audio=True)
+                if len(sys_play) >= 2:
+                    client.connect(self._monitor_L, sys_play[0])
+                    client.connect(self._monitor_R, sys_play[1])
+                    print(f"[audio] connected monitor -> {sys_play[0].name}, {sys_play[1].name}")
         except Exception as e:
             print(f"[audio] port connection warning: {e}")
 
     def _process_callback(self, frames):
         """JACK real-time callback: downsample mic input to 16kHz frames."""
         mic_data = self._mic_in.get_array()
+
+        # Software monitoring: apply gain+reverb to monitor outputs
+        if self._software_monitor:
+            if not self._monitor_muted:
+                wet = mic_data * self._gain
+                wet = self._reverb.process(wet)
+                self._monitor_L.get_array()[:] = wet
+                self._monitor_R.get_array()[:] = wet
+            else:
+                self._monitor_L.get_array()[:] = 0
+                self._monitor_R.get_array()[:] = 0
 
         # Downsample 48kHz -> 16kHz (3:1 ratio) and buffer frames
         self._ds_buf = np.append(self._ds_buf, mic_data)
@@ -155,6 +245,16 @@ class JackAudioEngine:
                         self._frame_buf.insert(0, remainder)
                 return frame
         return None
+
+    def mute_monitor(self):
+        """Mute mic monitoring (e.g. during TTS to prevent feedback)."""
+        if self._software_monitor:
+            self._monitor_muted = True
+
+    def unmute_monitor(self):
+        """Unmute mic monitoring."""
+        if self._software_monitor:
+            self._monitor_muted = False
 
     def play_buffer(self, audio_data: np.ndarray, source_rate: int):
         """Play an audio buffer through JACK (used for TTS).

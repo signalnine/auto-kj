@@ -36,8 +36,10 @@ def test_speak_with_jack_engine(mock_exists, mock_run):
     )
     tts_mod.speak("Hello world")
     time.sleep(0.3)
-    # Should have played through JACK
+    # Should have muted monitor, played through JACK, then unmuted
+    mock_engine.mute_monitor.assert_called()
     mock_engine.play_buffer.assert_called()
+    mock_engine.unmute_monitor.assert_called()
     _reset_tts()
 
 

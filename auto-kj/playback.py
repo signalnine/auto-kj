@@ -6,9 +6,13 @@ import time
 _MPV_SOCK = "/tmp/auto-kj-mpv.sock"
 
 
+_IDLE_IMAGE = os.path.join(os.path.dirname(__file__), "auto-kj.png")
+
+
 class Player:
     def __init__(self):
         self._proc: subprocess.Popen | None = None
+        self._idle_proc: subprocess.Popen | None = None
         self._on_end_callback = None
         self._volume = 100
         self._paused = False
@@ -18,6 +22,7 @@ class Player:
         self._on_end_callback = callback
 
     def play(self, song: dict):
+        self.hide_idle_image()
         print(f"[player] Playing: {song.get('title', 'unknown')} type={song.get('source_type')}")
         if song["source_type"] == "karaoke":
             path = song["video_path"]
@@ -25,6 +30,38 @@ class Player:
             path = song.get("instrumental_path") or song.get("video_path")
         print(f"[player] Loading: {path}")
         self._start_mpv(path)
+
+    def show_idle_image(self):
+        """Display the idle hero image on screen via mpv."""
+        with self._lock:
+            if self._idle_proc and self._idle_proc.poll() is None:
+                return
+            if not os.path.exists(_IDLE_IMAGE):
+                print(f"[player] idle image not found: {_IDLE_IMAGE}")
+                return
+            self._idle_proc = subprocess.Popen(
+                [
+                    "mpv",
+                    "--vo=drm", "--drm-connector=auto",
+                    "--image-display-duration=inf",
+                    "--no-audio",
+                    "--really-quiet",
+                    _IDLE_IMAGE,
+                ],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            print("[player] showing idle image")
+
+    def hide_idle_image(self):
+        """Stop displaying the idle hero image."""
+        with self._lock:
+            if self._idle_proc and self._idle_proc.poll() is None:
+                self._idle_proc.terminate()
+                try:
+                    self._idle_proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    self._idle_proc.kill()
+                self._idle_proc = None
 
     def _start_mpv(self, path: str):
         with self._lock:
@@ -109,3 +146,4 @@ class Player:
 
     def shutdown(self):
         self.stop()
+        self.hide_idle_image()

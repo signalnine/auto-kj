@@ -58,6 +58,7 @@ class Karaoke:
             self.player.play(song)
         else:
             self.sm.transition(KaraokeState.IDLE)
+            self.player.show_idle_image()
             speak("Queue is empty. What should I play next?")
 
     def _on_spacebar(self):
@@ -308,6 +309,7 @@ If it sounds like they want to play a song, extract the song name with correct s
         os.makedirs(self.config.cache_dir, exist_ok=True)
         self._audio.start()
         set_audio_engine(self._audio)
+        self.player.show_idle_image()
         speak("Karaoke machine ready. Say Hey Karaoke or press spacebar.")
 
         self.keyboard.start()

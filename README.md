@@ -1,5 +1,7 @@
 # auto-kj
 
+![auto-kj](auto-kj.png)
+
 Voice-controlled karaoke machine. Say a song name, it finds it on YouTube, strips the vocals if needed, and plays it on your TV. Sing through a USB mic with hardware or software reverb monitoring.
 
 ## How it works

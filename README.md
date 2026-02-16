@@ -39,7 +39,7 @@ JACK provides low-latency audio routing and mixing. All audio sources are mixed 
 **Hardware mode** (default) — mic amp handles monitoring:
 ```
 USB Mic --> Mic Amp (monitoring/reverb) --> speakers
-        \-> [zita-a2j] --> JACK capture --> [downsample 48k->16k] --> wakeword / whisper
+        \-> JACK capture (-C flag) --> [downsample 48k->16k] --> wakeword / whisper
 
 system:playback  <-- mpv (--ao=jack)
                  <-- TTS (JACK client)
@@ -47,25 +47,26 @@ system:playback  <-- mpv (--ao=jack)
 
 **Software mode** — JACK handles monitoring:
 ```
-USB Mic (hw:2) --> [zita-a2j] --> JACK capture
-                                      |
-                  +-------------------+-------------------+
-                  |                                       |
-            [downsample 48k->16k]              [gain + Schroeder reverb]
-                  |                                       |
-            wakeword / whisper                            v
-                                                 system:playback  <-- mpv (--ao=jack)
-                                                                  <-- TTS (JACK client)
+USB Mic (hw:2) --> JACK capture (-C flag)
+                         |
+       +-----------------+-----------------+
+       |                                   |
+ [downsample 48k->16k]          [gain + Schroeder reverb]
+       |                                   |
+ wakeword / whisper                        v
+                                   system:playback  <-- mpv (--ao=jack)
+                                                    <-- TTS (JACK client)
 ```
+
+JACK captures the mic directly via its `-C` (capture device) flag, eliminating the need for a separate zita-a2j bridge process.
 
 | Segment | Latency (software mode) |
 |---------|---------|
-| USB mic -> zita-a2j | ~5-10ms |
-| JACK processing (1 period) | ~5ms |
-| JACK -> HDMI output (2 periods) | ~11ms |
-| **Total mic-to-speaker** | **~21-26ms** |
+| JACK processing (1 period @ 128) | ~2.7ms |
+| JACK -> HDMI output (2 periods) | ~5.3ms |
+| **Total mic-to-speaker** | **~8-13ms** |
 
-In software mode, the reverb is a Schroeder design (4 comb + 2 allpass filters) running on 256-sample blocks at 48kHz. Mic monitoring is automatically muted during TTS to prevent feedback.
+In software mode, the reverb is a Schroeder design (4 comb + 2 allpass filters) running on 128-sample blocks at 48kHz, implemented with scipy.signal.lfilter for C-optimized performance. Mic monitoring is automatically muted during TTS to prevent feedback.
 
 ## Install
 
@@ -74,7 +75,7 @@ git clone <repo> && cd auto-kj
 ./install.sh
 ```
 
-The installer handles: system packages (ffmpeg, mpv, espeak-ng, jackd2, zita-ajbridge), Python 3.11 via [uv](https://docs.astral.sh/uv/), all pip dependencies, wakeword model downloads, and data directories.
+The installer handles: system packages (ffmpeg, mpv, espeak-ng, jackd2), Python 3.11 via [uv](https://docs.astral.sh/uv/), all pip dependencies, wakeword model downloads, and data directories.
 
 Python 3.11 is required (Spleeter's TensorFlow dependency doesn't support 3.12+).
 
@@ -159,8 +160,8 @@ All settings via environment variables (or `~/.env` when running as a service):
 | `AUTOKJ_WHISPER_MODEL` | `small` | Whisper model size (tiny/base/small/medium) |
 | `AUTOKJ_WAKEWORD_MODEL` | `~/.auto-kj/models/hey_karaoke.onnx` | Path to custom wakeword model |
 | `AUTOKJ_JACK_DEVICE` | `hw:0,8` | ALSA device for JACK playback (HDMI output) |
-| `AUTOKJ_JACK_MIC_DEVICE` | `hw:2` | ALSA device for USB mic (via zita-a2j) |
-| `AUTOKJ_JACK_PERIOD` | `256` | JACK period size (frames) |
+| `AUTOKJ_JACK_MIC_DEVICE` | `hw:2` | ALSA device for USB mic (JACK `-C` capture) |
+| `AUTOKJ_JACK_PERIOD` | `128` | JACK period size (frames) |
 | `AUTOKJ_MONITOR_MODE` | `hardware` | Monitor mode: `hardware` (external amp) or `software` (JACK reverb) |
 | `AUTOKJ_MIC_GAIN` | `2.0` | Mic gain multiplier (software mode only) |
 | `AUTOKJ_REVERB_WET` | `0.1` | Reverb wet/dry mix, 0.0-1.0 (software mode only) |

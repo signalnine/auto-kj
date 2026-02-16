@@ -6,9 +6,10 @@ import threading
 import time
 
 import numpy as np
+from scipy.signal import lfilter
 
 JACK_RATE = 48000
-JACK_PERIOD = 256
+JACK_PERIOD = 128
 OUTPUT_RATE = 16000
 FRAME_SIZE = 1280  # 80ms at 16kHz
 
@@ -17,6 +18,7 @@ class SchroederReverb:
     """Simple Schroeder reverb: 4 comb filters + 2 allpass filters.
 
     Operates on float32 mono blocks at 48kHz.
+    Uses scipy.signal.lfilter for C-optimized inner loops.
     """
 
     def __init__(self, rate: int = JACK_RATE, wet: float = 0.3):
@@ -24,17 +26,45 @@ class SchroederReverb:
         # Comb filter delays (in samples) tuned for 48kHz
         comb_delays = [int(d * rate / 44100) for d in [1557, 1617, 1491, 1422]]
         comb_gains = [0.74, 0.71, 0.68, 0.65]
-        self._combs = [
-            (np.zeros(d, dtype=np.float32), d, g, 0)
-            for d, g in zip(comb_delays, comb_gains)
-        ]
+        # Comb filter: y[n] = x[n-D] + g*y[n-D]
+        # Transfer: z^{-D} / (1 - g*z^{-D})
+        # b = [0,0,...,0,1] (length D+1), a = [1,0,...,0,-g] (length D+1)
+        self._combs = []
+        for d, g in zip(comb_delays, comb_gains):
+            b = np.zeros(d + 1)
+            b[d] = 1.0
+            a = np.zeros(d + 1)
+            a[0] = 1.0
+            a[d] = -g
+            zi = np.zeros(d)
+            self._combs.append((b, a, zi))
+
         # Allpass filter delays
         ap_delays = [int(d * rate / 44100) for d in [225, 556]]
         ap_gain = 0.5
-        self._allpasses = [
-            (np.zeros(d, dtype=np.float32), d, ap_gain, 0)
-            for d in ap_delays
-        ]
+        # Allpass: y[n] = -g*x[n] + (1+g^2)*x[n-D] + g*y[n-D] - g^2*x[n-D] ... wait
+        # From the original code:
+        #   delayed = buf[pos]          # x[n-D] stored in circular buffer
+        #   buf[pos] = sig[j] + g * delayed   # store for future: x[n] + g*x[n-D]
+        #   out[j] = delayed - g * sig[j]     # output: x[n-D] - g*x[n]
+        # This is a standard allpass: H(z) = (z^{-D} - g) / (1 - g*z^{-D})
+        # But the buffer stores sig[j] + g*delayed, so the "delayed" read next time
+        # is actually the stored value, not the raw input.
+        # Let s[n] = buf contents. s[n] = x[n] + g*s[n-D]. out[n] = s[n-D] - g*x[n].
+        # s[n] is a comb filter of x: S(z) = X(z)/(1 - g*z^{-D})
+        # out[n] = s[n-D] - g*x[n] = z^{-D}*S(z) - g*X(z)
+        #        = z^{-D}*X/(1-g*z^{-D}) - g*X = X*(z^{-D} - g)/(1-g*z^{-D})
+        # So: b = [-g, 0,...,0, 1] (length D+1), a = [1, 0,...,0, -g] (length D+1)
+        self._allpasses = []
+        for d in ap_delays:
+            b = np.zeros(d + 1)
+            b[0] = -ap_gain
+            b[d] = 1.0
+            a = np.zeros(d + 1)
+            a[0] = 1.0
+            a[d] = -ap_gain
+            zi = np.zeros(d)
+            self._allpasses.append((b, a, zi))
 
     def process(self, block: np.ndarray) -> np.ndarray:
         """Process a mono float32 block, return wet/dry mix."""
@@ -42,44 +72,33 @@ class SchroederReverb:
             return block
 
         n = len(block)
-        comb_sum = np.zeros(n, dtype=np.float32)
+        comb_sum = np.zeros(n, dtype=np.float64)
 
         # Parallel comb filters
-        for i, (buf, delay, gain, pos) in enumerate(self._combs):
-            out = np.empty(n, dtype=np.float32)
-            for j in range(n):
-                out[j] = buf[pos]
-                buf[pos] = block[j] + gain * buf[pos]
-                pos = (pos + 1) % delay
-            self._combs[i] = (buf, delay, gain, pos)
+        for i, (b, a, zi) in enumerate(self._combs):
+            out, zi_new = lfilter(b, a, block, zi=zi)
+            self._combs[i] = (b, a, zi_new)
             comb_sum += out
 
         # Normalize comb sum to prevent clipping
         comb_sum *= 0.25
         # Series allpass filters
         sig = comb_sum
-        for i, (buf, delay, gain, pos) in enumerate(self._allpasses):
-            out = np.empty(n, dtype=np.float32)
-            for j in range(n):
-                delayed = buf[pos]
-                buf[pos] = sig[j] + gain * delayed
-                out[j] = delayed - gain * sig[j]
-                pos = (pos + 1) % delay
-            self._allpasses[i] = (buf, delay, gain, pos)
-            sig = out
+        for i, (b, a, zi) in enumerate(self._allpasses):
+            sig, zi_new = lfilter(b, a, sig, zi=zi)
+            self._allpasses[i] = (b, a, zi_new)
 
         result = block * (1.0 - self.wet) + sig * self.wet
-        return np.clip(result, -1.0, 1.0)
+        return np.clip(result, -1.0, 1.0).astype(np.float32)
 
 
 class JackAudioEngine:
-    """Manages JACK server, zita-a2j bridge, and provides downsampled
-    16kHz frames for wakeword/whisper."""
+    """Manages JACK server and provides downsampled 16kHz frames for
+    wakeword/whisper."""
 
     def __init__(self, config):
         self._config = config
         self._jack_proc: subprocess.Popen | None = None
-        self._zita_proc: subprocess.Popen | None = None
         self._client = None
 
         # Software monitoring (SchroederReverb through JACK monitor ports)
@@ -98,11 +117,10 @@ class JackAudioEngine:
         self._running = False
 
     def start(self):
-        """Start JACK server, zita-a2j bridge, and register JACK client."""
+        """Start JACK server and register JACK client."""
         self._running = True
         self._start_jackd()
         self._wait_for_jack()
-        self._start_zita()
         time.sleep(0.5)
         self._start_client()
         mode = "software" if self._software_monitor else "hardware"
@@ -124,12 +142,14 @@ class JackAudioEngine:
 
     def _start_jackd(self):
         device = self._config.jack_device
+        mic_device = self._config.jack_mic_device
         period = self._config.jack_period
         env = {**os.environ, "JACK_NO_AUDIO_RESERVATION": "1"}
         self._jack_proc = subprocess.Popen(
             [
                 "jackd", "-R", "-d", "alsa",
                 "-P", device,
+                "-C", mic_device,
                 "-r", str(JACK_RATE),
                 "-p", str(period),
                 "-n", "2",
@@ -138,19 +158,7 @@ class JackAudioEngine:
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             env=env,
         )
-        print(f"[audio] jackd started (playback={device}, period={period})")
-
-    def _start_zita(self):
-        mic_device = self._config.jack_mic_device
-        self._zita_proc = subprocess.Popen(
-            [
-                "zita-a2j", "-d", mic_device,
-                "-r", str(JACK_RATE),
-                "-p", str(JACK_PERIOD),
-            ],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        print(f"[audio] zita-a2j started (mic={mic_device})")
+        print(f"[audio] jackd started (playback={device}, capture={mic_device}, period={period})")
 
     def _start_client(self):
         import jack
@@ -175,11 +183,11 @@ class JackAudioEngine:
     def _connect_ports(self):
         client = self._client
         try:
-            # zita-a2j capture -> our mic input
-            zita_ports = client.get_ports("zita-a2j", is_output=True)
-            if zita_ports:
-                client.connect(zita_ports[0], self._mic_in)
-                print(f"[audio] connected {zita_ports[0].name} -> auto-kj:mic_in")
+            # system capture -> our mic input
+            capture_ports = client.get_ports("system", is_output=True, is_audio=True)
+            if capture_ports:
+                client.connect(capture_ports[0], self._mic_in)
+                print(f"[audio] connected {capture_ports[0].name} -> auto-kj:mic_in")
 
             # Software mode: connect monitor outputs -> system playback
             if self._software_monitor:
@@ -328,13 +336,11 @@ class JackAudioEngine:
             except Exception:
                 pass
             self._client = None
-        for proc in (self._zita_proc, self._jack_proc):
-            if proc and proc.poll() is None:
-                try:
-                    proc.terminate()
-                    proc.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-        self._zita_proc = None
+        if self._jack_proc and self._jack_proc.poll() is None:
+            try:
+                self._jack_proc.terminate()
+                self._jack_proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self._jack_proc.kill()
         self._jack_proc = None
         print("[audio] JACK engine stopped")

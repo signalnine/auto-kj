@@ -30,7 +30,7 @@ class Config:
         if self.jack_mic_device is None:
             self.jack_mic_device = os.environ.get("AUTOKJ_JACK_MIC_DEVICE", "hw:2")
         if self.jack_period is None:
-            self.jack_period = int(os.environ.get("AUTOKJ_JACK_PERIOD", "256"))
+            self.jack_period = int(os.environ.get("AUTOKJ_JACK_PERIOD", "128"))
         if self.clips_dir is None:
             self.clips_dir = os.environ.get("AUTOKJ_CLIPS_DIR", os.path.expanduser("~/.auto-kj/clips"))
         if self.monitor_mode is None:

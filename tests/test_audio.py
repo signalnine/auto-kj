@@ -43,7 +43,7 @@ class TestJackAudioEngine:
         defaults = dict(
             jack_device="hw:0",
             jack_mic_device="hw:2",
-            jack_period=256,
+            jack_period=128,
             monitor_mode="hardware",
             mic_gain=2.0,
             reverb_wet=0.1,
@@ -63,15 +63,10 @@ class TestJackAudioEngine:
         assert args[0] == "jackd"
         assert "-d" in args
         assert "hw:0" in args
-
-    @patch("audio.subprocess.Popen")
-    def test_start_zita(self, mock_popen):
-        config = self._make_config()
-        engine = JackAudioEngine(config)
-        engine._start_zita()
-        args = mock_popen.call_args[0][0]
-        assert args[0] == "zita-a2j"
-        assert "hw:2" in args
+        # Verify -C flag for mic capture
+        assert "-C" in args
+        c_idx = args.index("-C")
+        assert args[c_idx + 1] == "hw:2"
 
     def test_get_frame_returns_none_when_stopped(self):
         config = self._make_config()
@@ -100,18 +95,18 @@ class TestJackAudioEngine:
         engine._running = True
 
         # Simulate JACK port with numpy array
-        mic_array = np.ones(256, dtype=np.float32) * 0.5
+        mic_array = np.ones(128, dtype=np.float32) * 0.5
 
         engine._mic_in = MagicMock()
         engine._mic_in.get_array.return_value = mic_array
 
-        engine._process_callback(256)
+        engine._process_callback(128)
 
         # Should have downsampled data in the frame buffer
         assert len(engine._frame_buf) > 0
         total = sum(len(f) for f in engine._frame_buf)
-        # 256 samples at 48k -> ~85 samples at 16k
-        assert total == 256 // 3
+        # 128 samples at 48k -> 42 samples at 16k
+        assert total == 128 // 3
 
     def test_process_callback_downsamples_software(self):
         """Software mode: monitor ports + downsampling."""
@@ -119,25 +114,25 @@ class TestJackAudioEngine:
         engine = JackAudioEngine(config)
         engine._running = True
 
-        mic_array = np.ones(256, dtype=np.float32) * 0.5
+        mic_array = np.ones(128, dtype=np.float32) * 0.5
 
         engine._mic_in = MagicMock()
         engine._mic_in.get_array.return_value = mic_array
 
         # Mock monitor ports
-        monitor_L_arr = np.zeros(256, dtype=np.float32)
-        monitor_R_arr = np.zeros(256, dtype=np.float32)
+        monitor_L_arr = np.zeros(128, dtype=np.float32)
+        monitor_R_arr = np.zeros(128, dtype=np.float32)
         engine._monitor_L = MagicMock()
         engine._monitor_L.get_array.return_value = monitor_L_arr
         engine._monitor_R = MagicMock()
         engine._monitor_R.get_array.return_value = monitor_R_arr
 
-        engine._process_callback(256)
+        engine._process_callback(128)
 
         # Should have downsampled data in the frame buffer
         assert len(engine._frame_buf) > 0
         total = sum(len(f) for f in engine._frame_buf)
-        assert total == 256 // 3
+        assert total == 128 // 3
 
     def test_process_callback_applies_reverb_when_monitoring(self):
         """Software mode: gain+reverb applied to monitor outputs."""
@@ -145,19 +140,19 @@ class TestJackAudioEngine:
         engine = JackAudioEngine(config)
         engine._running = True
 
-        mic_array = np.ones(256, dtype=np.float32) * 0.3
+        mic_array = np.ones(128, dtype=np.float32) * 0.3
 
         engine._mic_in = MagicMock()
         engine._mic_in.get_array.return_value = mic_array
 
-        monitor_L_arr = np.zeros(256, dtype=np.float32)
-        monitor_R_arr = np.zeros(256, dtype=np.float32)
+        monitor_L_arr = np.zeros(128, dtype=np.float32)
+        monitor_R_arr = np.zeros(128, dtype=np.float32)
         engine._monitor_L = MagicMock()
         engine._monitor_L.get_array.return_value = monitor_L_arr
         engine._monitor_R = MagicMock()
         engine._monitor_R.get_array.return_value = monitor_R_arr
 
-        engine._process_callback(256)
+        engine._process_callback(128)
 
         # Monitor outputs should have non-zero signal (gain * reverb applied)
         assert engine._monitor_L.get_array.called
@@ -170,19 +165,19 @@ class TestJackAudioEngine:
         engine._running = True
         engine._monitor_muted = True
 
-        mic_array = np.ones(256, dtype=np.float32) * 0.5
+        mic_array = np.ones(128, dtype=np.float32) * 0.5
 
         engine._mic_in = MagicMock()
         engine._mic_in.get_array.return_value = mic_array
 
-        monitor_L_arr = np.ones(256, dtype=np.float32)
-        monitor_R_arr = np.ones(256, dtype=np.float32)
+        monitor_L_arr = np.ones(128, dtype=np.float32)
+        monitor_R_arr = np.ones(128, dtype=np.float32)
         engine._monitor_L = MagicMock()
         engine._monitor_L.get_array.return_value = monitor_L_arr
         engine._monitor_R = MagicMock()
         engine._monitor_R.get_array.return_value = monitor_R_arr
 
-        engine._process_callback(256)
+        engine._process_callback(128)
 
         # Monitor outputs should be zeroed
         np.testing.assert_array_equal(monitor_L_arr, 0)
@@ -218,12 +213,10 @@ class TestJackAudioEngine:
         mock_proc = MagicMock()
         mock_proc.poll.return_value = None
         engine._jack_proc = mock_proc
-        engine._zita_proc = mock_proc
         engine._running = True
 
         engine.shutdown()
 
         assert not engine._running
         assert engine._jack_proc is None
-        assert engine._zita_proc is None
         mock_proc.terminate.assert_called()

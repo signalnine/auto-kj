@@ -170,13 +170,20 @@ class Karaoke:
         self.sm.return_from_listening()
         try:
             import anthropic
+            import random
             client = anthropic.Anthropic()
+            categories = [
+                "music", "singing", "karaoke", "animals", "food",
+                "science", "technology", "sports", "movies", "puns",
+            ]
+            cat = random.choice(categories)
             msg = client.messages.create(
                 model="claude-sonnet-4-5-20250929",
                 max_tokens=200,
+                temperature=1.0,
                 messages=[{
                     "role": "user",
-                    "content": "Tell a short, funny joke. Just the joke, nothing else. Keep it under 2 sentences."
+                    "content": f"Tell a short, funny {cat} joke. Just the joke, nothing else. Keep it under 2 sentences."
                 }],
             )
             joke = msg.content[0].text

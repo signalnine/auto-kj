@@ -64,11 +64,11 @@ JACK captures the mic directly via its `-C` (capture device) flag, eliminating t
 
 | Segment | Latency (software mode) |
 |---------|---------|
-| JACK processing (1 period @ 128) | ~2.7ms |
-| JACK -> HDMI output (2 periods) | ~5.3ms |
-| **Total mic-to-speaker** | **~8-13ms** |
+| JACK processing (1 period @ 256) | ~5ms |
+| JACK -> HDMI output (2 periods) | ~11ms |
+| **Total mic-to-speaker** | **~16-21ms** |
 
-In software mode, the reverb is a Schroeder design (4 comb + 2 allpass filters) running on 128-sample blocks at 48kHz, implemented with scipy.signal.lfilter for C-optimized performance. Mic monitoring is automatically muted during TTS to prevent feedback.
+In software mode, the reverb is a Schroeder design (4 comb + 2 allpass filters) running on 256-sample blocks at 48kHz, implemented with scipy.signal.lfilter for C-optimized performance. Mic monitoring is automatically muted during TTS to prevent feedback.
 
 ## Install
 
@@ -163,7 +163,7 @@ All settings via environment variables (or `~/.env` when running as a service):
 | `AUTOKJ_WAKEWORD_MODEL` | `~/.auto-kj/models/hey_karaoke.onnx` | Path to custom wakeword model |
 | `AUTOKJ_JACK_DEVICE` | `hw:0,8` | ALSA device for JACK playback (HDMI output) |
 | `AUTOKJ_JACK_MIC_DEVICE` | `hw:2` | ALSA device for USB mic (JACK `-C` capture) |
-| `AUTOKJ_JACK_PERIOD` | `128` | JACK period size (frames) |
+| `AUTOKJ_JACK_PERIOD` | `256` | JACK period size (frames) |
 | `AUTOKJ_MONITOR_MODE` | `hardware` | Monitor mode: `hardware` (external amp) or `software` (JACK reverb) |
 | `AUTOKJ_MIC_GAIN` | `2.0` | Mic gain multiplier (software mode only) |
 | `AUTOKJ_REVERB_WET` | `0.1` | Reverb wet/dry mix, 0.0-1.0 (software mode only) |

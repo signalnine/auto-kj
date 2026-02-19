@@ -9,7 +9,7 @@ import numpy as np
 from scipy.signal import lfilter
 
 JACK_RATE = 48000
-JACK_PERIOD = 128
+JACK_PERIOD = 256
 OUTPUT_RATE = 16000
 FRAME_SIZE = 1280  # 80ms at 16kHz
 

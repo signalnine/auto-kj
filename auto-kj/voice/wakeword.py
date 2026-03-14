@@ -4,7 +4,7 @@ from openwakeword.model import Model
 
 
 class WakeWordListener:
-    def __init__(self, model_path: str = None, threshold: float = 0.5):
+    def __init__(self, model_path: str = None, threshold: float = 0.3):
         if model_path and os.path.exists(model_path):
             self.model = Model(wakeword_models=[model_path], inference_framework="onnx")
         else:

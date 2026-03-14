@@ -1,5 +1,7 @@
 import os
+import random
 import subprocess
+import tempfile
 import threading
 import time
 
@@ -8,11 +10,88 @@ _MPV_SOCK = "/tmp/auto-kj-mpv.sock"
 
 _IDLE_IMAGE = os.path.join(os.path.dirname(__file__), "auto-kj.png")
 
+_SONG_SUGGESTIONS = [
+    # Classic karaoke
+    "Don't Stop Believin' by Journey",
+    "Bohemian Rhapsody by Queen",
+    "Sweet Caroline by Neil Diamond",
+    "Living on a Prayer by Bon Jovi",
+    "I Will Survive by Gloria Gaynor",
+    "Total Eclipse of the Heart by Bonnie Tyler",
+    "Take Me Home, Country Roads by John Denver",
+    "Mr. Brightside by The Killers",
+    "Summer Nights from Grease",
+    "Wannabe by Spice Girls",
+    "Dancing Queen by ABBA",
+    "Under Pressure by Queen",
+    "Tiny Dancer by Elton John",
+    "You Oughta Know by Alanis Morissette",
+    "I Want It That Way by Backstreet Boys",
+    "Respect by Aretha Franklin",
+    "Piano Man by Billy Joel",
+    "Livin' La Vida Loca by Ricky Martin",
+    "Baby One More Time by Britney Spears",
+    "Since U Been Gone by Kelly Clarkson",
+    "Somebody That I Used to Know by Gotye",
+    "Hey Jude by The Beatles",
+    "Billie Jean by Michael Jackson",
+    "Girls Just Want to Have Fun by Cyndi Lauper",
+    "Love Shack by The B-52's",
+    "Build Me Up Buttercup by The Foundations",
+    "Africa by Toto",
+    "Wonderwall by Oasis",
+    "Jessie's Girl by Rick Springfield",
+    "Come On Eileen by Dexys Midnight Runners",
+    "It's Raining Men by The Weather Girls",
+    "Ice Ice Baby by Vanilla Ice",
+    "Jolene by Dolly Parton",
+    "Ring of Fire by Johnny Cash",
+    "Crazy by Patsy Cline",
+    "Stand By Me by Ben E. King",
+    "Ain't No Mountain High Enough by Marvin Gaye",
+    "Shallow by Lady Gaga",
+    "Uptown Funk by Bruno Mars",
+    "Rolling in the Deep by Adele",
+    "Zombie by The Cranberries",
+    "No Scrubs by TLC",
+    "Toxic by Britney Spears",
+    "Everywhere by Fleetwood Mac",
+    "Take On Me by a-ha",
+    # Disney
+    "Let It Go from Frozen",
+    "A Whole New World from Aladdin",
+    "Under the Sea from The Little Mermaid",
+    "Hakuna Matata from The Lion King",
+    "Part of Your World from The Little Mermaid",
+    "Be Our Guest from Beauty and the Beast",
+    "How Far I'll Go from Moana",
+    "You're Welcome from Moana",
+    "We Don't Talk About Bruno from Encanto",
+    "Into the Unknown from Frozen 2",
+    "Supercalifragilisticexpialidocious from Mary Poppins",
+    "Friend Like Me from Aladdin",
+    "I Just Can't Wait to Be King from The Lion King",
+    "Can You Feel the Love Tonight from The Lion King",
+    "Colors of the Wind from Pocahontas",
+    "You've Got a Friend in Me from Toy Story",
+    "When You Wish Upon a Star from Pinocchio",
+    "Circle of Life from The Lion King",
+    "Reflection from Mulan",
+    "Go the Distance from Hercules",
+    "Beauty and the Beast from Beauty and the Beast",
+    "Do You Want to Build a Snowman from Frozen",
+    "Surface Pressure from Encanto",
+    "Remember Me from Coco",
+    "I See the Light from Tangled",
+    "Almost There from The Princess and the Frog",
+]
+
 
 class Player:
     def __init__(self):
         self._proc: subprocess.Popen | None = None
         self._idle_proc: subprocess.Popen | None = None
+        self._idle_cycle_stop: threading.Event | None = None
         self._on_end_callback = None
         self._volume = 100
         self._paused = False
@@ -32,13 +111,29 @@ class Player:
         self._start_mpv(path)
 
     def show_idle_image(self):
-        """Display the idle hero image on screen via mpv."""
+        """Display the idle hero image on screen with a song suggestion.
+
+        Cycles to a new suggestion every hour.
+        """
+        self._stop_idle_cycle()
+        self._show_idle_once()
+        stop = threading.Event()
+        self._idle_cycle_stop = stop
+        def _cycle():
+            while not stop.wait(3600):
+                self._kill_idle_proc()
+                self._show_idle_once()
+        threading.Thread(target=_cycle, daemon=True).start()
+
+    def _show_idle_once(self):
         with self._lock:
             if self._idle_proc and self._idle_proc.poll() is None:
                 return
             if not os.path.exists(_IDLE_IMAGE):
                 print(f"[player] idle image not found: {_IDLE_IMAGE}")
                 return
+            song = random.choice(_SONG_SUGGESTIONS)
+            sub_path = self._write_idle_subtitle(song)
             self._idle_proc = subprocess.Popen(
                 [
                     "mpv",
@@ -46,14 +141,40 @@ class Player:
                     "--image-display-duration=inf",
                     "--no-audio",
                     "--really-quiet",
+                    f"--sub-file={sub_path}",
                     _IDLE_IMAGE,
                 ],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
-            print("[player] showing idle image")
+            print(f"[player] showing idle image (try: {song})")
 
-    def hide_idle_image(self):
-        """Stop displaying the idle hero image."""
+    @staticmethod
+    def _write_idle_subtitle(song: str) -> str:
+        """Write an ASS subtitle file with the song suggestion."""
+        ass_content = f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: 1920
+PlayResY: 1080
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,72,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,2,40,40,80,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,9:00:00.00,Default,,0,0,0,,Try saying\\N{{\\fs56\\i1}}"Hey Karaoke play {song}"
+"""
+        fd, path = tempfile.mkstemp(suffix=".ass", prefix="auto-kj-idle-")
+        with os.fdopen(fd, "w") as f:
+            f.write(ass_content)
+        return path
+
+    def _stop_idle_cycle(self):
+        if self._idle_cycle_stop:
+            self._idle_cycle_stop.set()
+            self._idle_cycle_stop = None
+
+    def _kill_idle_proc(self):
         with self._lock:
             if self._idle_proc and self._idle_proc.poll() is None:
                 self._idle_proc.terminate()
@@ -62,6 +183,11 @@ class Player:
                 except subprocess.TimeoutExpired:
                     self._idle_proc.kill()
                 self._idle_proc = None
+
+    def hide_idle_image(self):
+        """Stop displaying the idle hero image."""
+        self._stop_idle_cycle()
+        self._kill_idle_proc()
 
     def _start_mpv(self, path: str):
         with self._lock:

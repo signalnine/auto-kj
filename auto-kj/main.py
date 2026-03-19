@@ -269,12 +269,24 @@ If it sounds like they want to play a song, extract the song name with correct s
         """
         print("Mic stream opened — listening for wakeword...")
         frame_count = 0
+        wake_threshold = 500  # well above noise floor of 8-12
+        last_wake = 0
+        wake_cooldown = 30  # seconds between wake attempts
         while self._running:
             frame = self._audio.get_frame()
             if frame is None:
                 break
 
             self._clip_buffer.append(frame)
+
+            # Wake screen on mic noise (OLED burn-in protection)
+            peak = int(np.max(np.abs(frame)))
+            if peak > wake_threshold and self.player._screen_blanked:
+                now = time.monotonic()
+                if now - last_wake > wake_cooldown:
+                    last_wake = now
+                    self.player.wake_screen()
+                    print(f"[screen] woke on mic noise (peak={peak})")
 
             if self._recording:
                 self._record_frames.append(frame)
@@ -301,7 +313,6 @@ If it sounds like they want to play a song, extract the song name with correct s
                     self._listen_for_command()
                 frame_count += 1
                 if frame_count % 500 == 0:
-                    peak = int(np.max(np.abs(frame)))
                     print(f"[mic] frames={frame_count}, peak={peak}")
 
     def run(self):

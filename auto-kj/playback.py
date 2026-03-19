@@ -4,11 +4,13 @@ import subprocess
 import tempfile
 import threading
 import time
+from datetime import datetime
 
 _MPV_SOCK = "/tmp/auto-kj-mpv.sock"
 
 
 _IDLE_IMAGE = os.path.join(os.path.dirname(__file__), "auto-kj.png")
+_REFRESH_VIDEO_CACHE = os.path.expanduser("~/.auto-kj/cache/pixel-refresh.mp4")
 
 _SONG_SUGGESTIONS = [
     # Classic karaoke
@@ -96,6 +98,8 @@ class Player:
         self._volume = 100
         self._paused = False
         self._lock = threading.Lock()
+        self._screen_blanked = False
+        self._screen_blank_seconds = 600  # 10 minutes
 
     def on_song_end(self, callback):
         self._on_end_callback = callback
@@ -110,25 +114,91 @@ class Player:
         print(f"[player] Loading: {path}")
         self._start_mpv(path)
 
+    def _is_overnight(self) -> bool:
+        """Check if current time is in the overnight refresh window (2am-6am)."""
+        hour = datetime.now().hour
+        return 2 <= hour < 6
+
+    def _get_refresh_video_path(self) -> str | None:
+        """Get path to cached pixel-refresh video, downloading if needed."""
+        if os.path.exists(_REFRESH_VIDEO_CACHE):
+            return _REFRESH_VIDEO_CACHE
+        try:
+            os.makedirs(os.path.dirname(_REFRESH_VIDEO_CACHE), exist_ok=True)
+            subprocess.run(
+                [
+                    "yt-dlp",
+                    "-f", "bestvideo[height<=1080][ext=mp4]",
+                    "--no-audio",
+                    "-o", _REFRESH_VIDEO_CACHE,
+                    "https://www.youtube.com/watch?v=mMDGLOOPOIs",
+                ],
+                capture_output=True, timeout=120,
+            )
+            if os.path.exists(_REFRESH_VIDEO_CACHE):
+                print("[player] downloaded pixel-refresh video")
+                return _REFRESH_VIDEO_CACHE
+        except Exception as e:
+            print(f"[player] failed to download pixel-refresh video: {e}")
+        return None
+
+    def _blank_screen(self):
+        """Blank the screen to prevent OLED burn-in."""
+        self._kill_idle_proc()
+        self._screen_blanked = True
+        print("[player] screen blanked (OLED protection)")
+
+    def wake_screen(self):
+        """Wake the screen from blank state by re-showing idle image."""
+        if not self._screen_blanked:
+            return
+        self._screen_blanked = False
+        self._show_idle_once()
+
     def show_idle_image(self):
         """Display the idle hero image on screen with a song suggestion.
 
+        Blanks after _screen_blank_seconds to prevent OLED burn-in.
         Cycles to a new suggestion every hour.
         """
         self._stop_idle_cycle()
+        self._screen_blanked = False
         self._show_idle_once()
         stop = threading.Event()
         self._idle_cycle_stop = stop
+        blank_seconds = self._screen_blank_seconds
         def _cycle():
-            while not stop.wait(3600):
-                self._kill_idle_proc()
+            # First wait: blank after timeout
+            if not stop.wait(blank_seconds):
+                self._blank_screen()
+            # Then cycle hourly: show for blank_seconds, then blank again
+            while not stop.wait(3600 - blank_seconds):
                 self._show_idle_once()
+                self._screen_blanked = False
+                if not stop.wait(blank_seconds):
+                    self._blank_screen()
         threading.Thread(target=_cycle, daemon=True).start()
 
     def _show_idle_once(self):
         with self._lock:
             if self._idle_proc and self._idle_proc.poll() is None:
                 return
+            if self._is_overnight():
+                path = self._get_refresh_video_path()
+                if path:
+                    self._idle_proc = subprocess.Popen(
+                        [
+                            "mpv",
+                            "--vo=drm", "--drm-connector=auto",
+                            "--no-audio",
+                            "--really-quiet",
+                            "--loop",
+                            path,
+                        ],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    )
+                    print("[player] playing overnight pixel-refresh video")
+                    return
             if not os.path.exists(_IDLE_IMAGE):
                 print(f"[player] idle image not found: {_IDLE_IMAGE}")
                 return
@@ -188,6 +258,7 @@ Dialogue: 0,0:00:00.00,9:00:00.00,Default,,0,0,0,,Try saying\\N{{\\fs56\\i1}}"He
         """Stop displaying the idle hero image."""
         self._stop_idle_cycle()
         self._kill_idle_proc()
+        self._screen_blanked = False
 
     def _start_mpv(self, path: str):
         with self._lock:

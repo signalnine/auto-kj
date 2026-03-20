@@ -87,12 +87,17 @@ def test_screen_blanks_after_timeout(mock_popen, mock_exists):
     mock_proc.terminate.assert_called()
 
 
-def test_screen_blanked_flag_set_after_blank():
-    """_screen_blanked is True after screen blanks."""
+@patch("playback.subprocess.Popen")
+def test_screen_blanked_shows_black(mock_popen):
+    """_blank_screen spawns mpv with solid black to cover TTY."""
+    mock_proc = MagicMock()
+    mock_proc.poll.return_value = None
+    mock_popen.return_value = mock_proc
     player = Player()
-    player._screen_blanked = False
     player._blank_screen()
     assert player._screen_blanked is True
+    args = mock_popen.call_args[0][0]
+    assert "lavfi://[color=black:s=1920x1080:r=1]" in args
 
 
 @patch("playback.os.path.exists", return_value=True)

@@ -143,8 +143,20 @@ class Player:
         return None
 
     def _blank_screen(self):
-        """Blank the screen to prevent OLED burn-in."""
+        """Blank the screen by showing solid black via mpv (prevents TTY burn-in)."""
         self._kill_idle_proc()
+        with self._lock:
+            self._idle_proc = subprocess.Popen(
+                [
+                    "mpv",
+                    "--vo=drm", "--drm-connector=auto",
+                    "--image-display-duration=inf",
+                    "--no-audio",
+                    "--really-quiet",
+                    "lavfi://[color=black:s=1920x1080:r=1]",
+                ],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
         self._screen_blanked = True
         print("[player] screen blanked (OLED protection)")
 

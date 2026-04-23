@@ -62,3 +62,29 @@ def test_resume_from_paused_ends_in_playing(karaoke):
     _enter_listening_from(karaoke, KaraokeState.PAUSED)
     karaoke._handle_intent("resume", None)
     assert karaoke.sm.state == KaraokeState.PLAYING
+
+
+@pytest.mark.parametrize("intent", [
+    "volume_up", "volume_down", "queue", "cancel", "joke", "unknown",
+])
+def test_nonpause_intent_resumes_player_when_returning_to_playing(karaoke, intent):
+    """Non-pause voice intents from LISTENING(prev=PLAYING) must resume the mpv
+    player; spacebar paused mpv on entry so mic could hear the command."""
+    _enter_listening_from(karaoke, KaraokeState.PLAYING)
+    karaoke.player.resume.reset_mock()
+    karaoke._handle_intent(intent, None)
+    assert karaoke.sm.state == KaraokeState.PLAYING
+    assert karaoke.player.resume.called, (
+        f"player.resume was not called after intent={intent!r}"
+    )
+
+
+def test_pause_intent_does_not_resume_player(karaoke):
+    """The 'pause' intent must leave mpv paused (no resume-then-repause blip)."""
+    _enter_listening_from(karaoke, KaraokeState.PLAYING)
+    karaoke.player.resume.reset_mock()
+    karaoke._handle_intent("pause", None)
+    assert karaoke.sm.state == KaraokeState.PAUSED
+    assert not karaoke.player.resume.called, (
+        "player.resume should not be called for 'pause' intent"
+    )

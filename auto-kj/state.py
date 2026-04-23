@@ -34,11 +34,15 @@ class StateMachine:
         for cb in self._callbacks.get(new_state, []):
             cb()
 
-    def return_from_listening(self):
+    def return_from_listening(self, fire_callbacks: bool = True):
         with self._lock:
             if self.state != KaraokeState.LISTENING:
                 return
             self.state = self._previous
+            restored = self.state
+        if fire_callbacks:
+            for cb in self._callbacks.get(restored, []):
+                cb()
 
     def on_enter(self, state: KaraokeState, callback: callable):
         self._callbacks.setdefault(state, []).append(callback)

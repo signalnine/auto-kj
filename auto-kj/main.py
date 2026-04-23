@@ -43,6 +43,8 @@ class Karaoke:
 
     def _setup_callbacks(self):
         self.player.on_song_end(self._on_song_end)
+        # Spacebar pauses mpv to free the mic; unpause on every return to PLAYING.
+        self.sm.on_enter(KaraokeState.PLAYING, self.player.resume)
         self.keyboard.on("space", self._on_spacebar)
         self.keyboard.on("escape", self._on_escape)
         self.keyboard.on("up", self.player.volume_up)
@@ -138,7 +140,7 @@ class Karaoke:
             self.player.skip()
         elif intent == "pause":
             if self.sm.state == KaraokeState.LISTENING:
-                self.sm.return_from_listening()
+                self.sm.return_from_listening(fire_callbacks=False)
                 if self.sm.state == KaraokeState.PLAYING:
                     self.player.pause()
                     self.sm.transition(KaraokeState.PAUSED)

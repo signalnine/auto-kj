@@ -31,7 +31,9 @@ def separate_vocals(video_path: str, output_dir: str) -> str:
     audio_path = os.path.join(output_dir, "audio.wav")
     extract_audio(video_path, audio_path)
     sep = _get_separator()
-    sep.separate_to_file(audio_path, output_dir)
+    # Override Spleeter's default '{filename}/{instrument}.{codec}' so the
+    # accompaniment lands directly in output_dir (matches _instrumental_path).
+    sep.separate_to_file(audio_path, output_dir, filename_format="{instrument}.{codec}")
     # Clean up intermediate audio file
     if os.path.exists(audio_path):
         os.remove(audio_path)

@@ -139,6 +139,9 @@ class Karaoke:
         elif intent == "pause":
             if self.sm.state == KaraokeState.LISTENING:
                 self.sm.return_from_listening()
+                if self.sm.state == KaraokeState.PLAYING:
+                    self.player.pause()
+                    self.sm.transition(KaraokeState.PAUSED)
         elif intent == "resume":
             self.player.resume()
             self.sm.return_from_listening()

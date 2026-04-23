@@ -100,3 +100,42 @@ def test_never_mind():
 def test_unknown():
     intent, song = parse_command("what is the meaning of life")
     assert intent == "unknown"
+
+
+def test_play_song_with_joke_in_title():
+    intent, song = parse_command("play The Joke by Brandi Carlile")
+    assert intent == "play"
+    assert song == "The Joke by Brandi Carlile"
+
+
+def test_play_song_titled_the_joke():
+    intent, song = parse_command("play the joke is on you")
+    assert intent == "play"
+    assert song == "the joke is on you"
+
+
+def test_sing_song_with_joke_in_title():
+    intent, song = parse_command("sing The Joke")
+    assert intent == "play"
+    assert song == "The Joke"
+
+
+def test_add_song_with_joke_in_title():
+    intent, song = parse_command("add The Joke to the queue")
+    assert intent == "play"
+    assert "Joke" in song
+
+
+def test_tell_me_a_joke_still_works():
+    intent, song = parse_command("tell me a joke")
+    assert intent == "joke"
+
+
+def test_bare_joke_still_works():
+    intent, song = parse_command("joke")
+    assert intent == "joke"
+
+
+def test_tell_a_joke_still_works():
+    intent, song = parse_command("tell a joke")
+    assert intent == "joke"

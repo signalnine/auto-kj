@@ -31,7 +31,7 @@ def parse_command(text: str) -> tuple[str, str | None]:
         return ("cancel", None)
 
     # Tell a joke
-    if re.search(r"(tell\s+(me\s+)?a\s+joke|joke)", t):
+    if re.match(r"^(joke|tell\s+(me\s+)?a\s+joke)\s*$", t):
         return ("joke", None)
 
     # Play / Sing / Add — extract song name

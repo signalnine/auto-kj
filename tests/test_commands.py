@@ -139,3 +139,47 @@ def test_bare_joke_still_works():
 def test_tell_a_joke_still_works():
     intent, song = parse_command("tell a joke")
     assert intent == "joke"
+
+
+def test_play_song_with_turn_it_up_in_title():
+    intent, song = parse_command("play Turn It Up")
+    assert intent == "play"
+    assert song == "Turn It Up"
+
+
+def test_play_song_with_louder_in_title():
+    intent, song = parse_command("play Louder Than Words")
+    assert intent == "play"
+    assert song == "Louder Than Words"
+
+
+def test_sing_song_with_softer_in_title():
+    intent, song = parse_command("sing Softer by someone")
+    assert intent == "play"
+    assert song == "Softer by someone"
+
+
+def test_play_song_titled_quieter():
+    intent, song = parse_command("play Quieter")
+    assert intent == "play"
+    assert song == "Quieter"
+
+
+def test_bare_volume_up_still_works():
+    intent, song = parse_command("volume up")
+    assert intent == "volume_up"
+
+
+def test_bare_louder_still_works():
+    intent, song = parse_command("louder")
+    assert intent == "volume_up"
+
+
+def test_bare_turn_it_up_still_works():
+    intent, song = parse_command("turn it up")
+    assert intent == "volume_up"
+
+
+def test_bare_softer_still_works():
+    intent, song = parse_command("softer")
+    assert intent == "volume_down"

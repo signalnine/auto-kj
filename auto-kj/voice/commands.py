@@ -21,9 +21,9 @@ def parse_command(text: str) -> tuple[str, str | None]:
         return ("queue", None)
 
     # Volume
-    if re.search(r"(volume\s+up|louder|turn\s+(it\s+)?up)", t):
+    if re.match(r"^(volume\s+up|louder|turn\s+(it\s+)?up)\s*$", t):
         return ("volume_up", None)
-    if re.search(r"(volume\s+down|quieter|softer|turn\s+(it\s+)?down)", t):
+    if re.match(r"^(volume\s+down|quieter|softer|turn\s+(it\s+)?down)\s*$", t):
         return ("volume_down", None)
 
     # Cancel

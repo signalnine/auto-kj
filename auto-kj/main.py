@@ -266,6 +266,26 @@ If it sounds like they want to play a song, extract the song name with correct s
         """Keyboard shortcut handler: save current buffer as a missed wakeword clip."""
         self._save_clip("missed")
 
+    def _on_wakeword_detected(self) -> threading.Thread:
+        """Collect ~0.5s of post-detection audio and save a clip.
+
+        Returns the save thread so callers (mainly tests) can join on it.
+        """
+        self.wakeword.reset()
+        post_frames = []
+        for _ in range(6):
+            pf = self._audio.get_frame()
+            if pf is None:
+                break
+            post_frames.append(pf)
+        save_thread = threading.Thread(
+            target=self._save_clip,
+            args=("detected", post_frames),
+            daemon=True,
+        )
+        save_thread.start()
+        return save_thread
+
     def _mic_loop(self):
         """Read 16kHz frames from JACK engine for wakeword and command recording.
 
@@ -300,20 +320,7 @@ If it sounds like they want to play a song, extract the song name with correct s
             if self.sm.state in (KaraokeState.IDLE, KaraokeState.PAUSED):
                 if self.wakeword.process_frame(frame):
                     print("Wakeword detected!")
-                    self.wakeword.reset()
-                    # Collect ~0.5s of post-detection audio for the clip
-                    post_frames = []
-                    for _ in range(6):
-                        pf = self._audio.get_frame()
-                        if pf is None:
-                            break
-                        self._clip_buffer.append(pf)
-                        post_frames.append(pf)
-                    threading.Thread(
-                        target=self._save_clip,
-                        args=("detected", post_frames),
-                        daemon=True,
-                    ).start()
+                    self._on_wakeword_detected()
                     self.sm.transition(KaraokeState.LISTENING)
                     self._listen_for_command()
                 frame_count += 1

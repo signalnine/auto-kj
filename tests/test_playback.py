@@ -136,6 +136,87 @@ def test_wake_screen_resets_blank_timer(mock_popen, mock_exists):
     assert player._idle_proc is not None or mock_popen.called
 
 
+@patch("playback.Player._is_overnight", return_value=False)
+@patch("playback.os.path.exists", return_value=True)
+@patch("playback.subprocess.Popen")
+def test_wake_screen_replaces_black_mpv_with_idle_image(mock_popen, mock_exists, mock_overnight):
+    """After _blank_screen leaves a live black mpv as _idle_proc, wake_screen
+    must terminate it and spawn a new mpv showing the idle hero image."""
+    procs = []
+
+    def make_proc(*_a, **_kw):
+        p = MagicMock()
+        p.poll.return_value = None
+        procs.append(p)
+        return p
+    mock_popen.side_effect = make_proc
+
+    player = Player()
+    player._blank_screen()
+    assert player._screen_blanked is True
+    assert len(procs) == 1
+    black_proc = procs[0]
+
+    player.wake_screen()
+
+    assert player._screen_blanked is False
+    black_proc.terminate.assert_called()
+    assert len(procs) == 2, "wake_screen should have spawned a new mpv"
+    new_args = mock_popen.call_args_list[-1][0][0]
+    assert _IDLE_IMAGE in new_args
+    assert "lavfi://[color=black:s=1920x1080:r=1]" not in new_args
+
+
+@patch("playback.Player._is_overnight", return_value=False)
+@patch("playback.os.path.exists", return_value=True)
+@patch("playback.subprocess.Popen")
+def test_show_idle_once_replaces_black_mpv(mock_popen, mock_exists, mock_overnight):
+    """If _show_idle_once is called while the black mpv is the active idle
+    proc, it should replace it with the idle image (not no-op)."""
+    procs = []
+
+    def make_proc(*_a, **_kw):
+        p = MagicMock()
+        p.poll.return_value = None
+        procs.append(p)
+        return p
+    mock_popen.side_effect = make_proc
+
+    player = Player()
+    player._blank_screen()
+    player._screen_blanked = False  # caller has already cleared the flag
+    player._show_idle_once()
+
+    assert len(procs) == 2
+    new_args = mock_popen.call_args_list[-1][0][0]
+    assert _IDLE_IMAGE in new_args
+
+
+@patch("playback.Player._is_overnight", return_value=False)
+@patch("playback.os.path.exists", return_value=True)
+@patch("playback.subprocess.Popen")
+def test_show_idle_once_is_idempotent_when_already_showing(mock_popen, mock_exists, mock_overnight):
+    """When the idle image is already showing, repeated _show_idle_once
+    calls must not thrash (no new Popen, no terminate)."""
+    procs = []
+
+    def make_proc(*_a, **_kw):
+        p = MagicMock()
+        p.poll.return_value = None
+        procs.append(p)
+        return p
+    mock_popen.side_effect = make_proc
+
+    player = Player()
+    player._show_idle_once()
+    assert len(procs) == 1
+    first = procs[0]
+
+    player._show_idle_once()
+    assert len(procs) == 1, "should not spawn a second mpv"
+    first.terminate.assert_not_called()
+
+
 @patch("playback.datetime")
 def test_is_overnight_true_at_3am(mock_dt):
     mock_dt.now.return_value = datetime(2026, 3, 18, 3, 0)

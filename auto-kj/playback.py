@@ -93,6 +93,7 @@ class Player:
     def __init__(self):
         self._proc: subprocess.Popen | None = None
         self._idle_proc: subprocess.Popen | None = None
+        self._idle_kind: str | None = None  # "image", "refresh", or "black"
         self._idle_cycle_stop: threading.Event | None = None
         self._on_end_callback = None
         self._volume = 100
@@ -157,6 +158,7 @@ class Player:
                 ],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
+            self._idle_kind = "black"
         self._screen_blanked = True
         print("[player] screen blanked (OLED protection)")
 
@@ -192,10 +194,17 @@ class Player:
         threading.Thread(target=_cycle, daemon=True).start()
 
     def _show_idle_once(self):
+        target_kind = "refresh" if self._is_overnight() else "image"
         with self._lock:
-            if self._idle_proc and self._idle_proc.poll() is None:
+            if (
+                self._idle_proc
+                and self._idle_proc.poll() is None
+                and self._idle_kind == target_kind
+            ):
                 return
-            if self._is_overnight():
+        self._kill_idle_proc()
+        with self._lock:
+            if target_kind == "refresh":
                 path = self._get_refresh_video_path()
                 if path:
                     self._idle_proc = subprocess.Popen(
@@ -209,6 +218,7 @@ class Player:
                         ],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     )
+                    self._idle_kind = "refresh"
                     print("[player] playing overnight pixel-refresh video")
                     return
             if not os.path.exists(_IDLE_IMAGE):
@@ -228,6 +238,7 @@ class Player:
                 ],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
+            self._idle_kind = "image"
             print(f"[player] showing idle image (try: {song})")
 
     @staticmethod
@@ -264,7 +275,8 @@ Dialogue: 0,0:00:00.00,9:00:00.00,Default,,0,0,0,,Try saying\\N{{\\fs56\\i1}}"He
                     self._idle_proc.wait(timeout=3)
                 except subprocess.TimeoutExpired:
                     self._idle_proc.kill()
-                self._idle_proc = None
+            self._idle_proc = None
+            self._idle_kind = None
 
     def hide_idle_image(self):
         """Stop displaying the idle hero image."""

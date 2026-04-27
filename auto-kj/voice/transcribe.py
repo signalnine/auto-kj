@@ -1,14 +1,13 @@
 import whisper
 import numpy as np
 
-_model = None
+_models: dict[str, object] = {}
 
 
 def _get_model(model_name: str = "small"):
-    global _model
-    if _model is None:
-        _model = whisper.load_model(model_name)
-    return _model
+    if model_name not in _models:
+        _models[model_name] = whisper.load_model(model_name)
+    return _models[model_name]
 
 
 def transcribe_audio(

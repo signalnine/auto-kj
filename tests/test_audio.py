@@ -37,6 +37,21 @@ class TestSchroederReverb:
         # Output should differ from input due to wet mix
         assert not np.allclose(out, block)
 
+    def test_scratch_buffers_reused_across_calls(self):
+        """Pre-allocated scratch buffers must be reused so the JACK callback
+        does not allocate per-block (avoiding xrun risk)."""
+        reverb = SchroederReverb(wet=0.3)
+        block = np.random.randn(256).astype(np.float32)
+        # First call may lazily allocate scratch
+        reverb.process(block)
+        comb_id = id(reverb._comb_sum)
+        result_id = id(reverb._result_f32)
+        # Subsequent calls must reuse the same buffers
+        for _ in range(20):
+            reverb.process(block)
+        assert id(reverb._comb_sum) == comb_id
+        assert id(reverb._result_f32) == result_id
+
 
 class TestJackAudioEngine:
     def _make_config(self, **overrides):
@@ -79,14 +94,15 @@ class TestJackAudioEngine:
         config = self._make_config()
         engine = JackAudioEngine(config)
         engine._running = True
-        # Pre-fill the frame buffer with enough samples
-        samples = np.zeros(FRAME_SIZE + 100, dtype=np.int16)
-        engine._frame_buf.append(samples)
+        # Pre-fill the ring buffer with enough samples
+        samples = np.arange(FRAME_SIZE + 100, dtype=np.int16)
+        engine._ring_write_samples(samples)
         engine._frame_event.set()
         frame = engine.get_frame()
         assert frame is not None
         assert len(frame) == FRAME_SIZE
         assert frame.dtype == np.int16
+        np.testing.assert_array_equal(frame, samples[:FRAME_SIZE])
 
     def test_process_callback_downsamples(self):
         """Hardware mode: no monitor ports, just downsampling."""
@@ -102,11 +118,10 @@ class TestJackAudioEngine:
 
         engine._process_callback(256)
 
-        # Should have downsampled data in the frame buffer
-        assert len(engine._frame_buf) > 0
-        total = sum(len(f) for f in engine._frame_buf)
+        # Should have downsampled data in the ring buffer
+        produced = engine._ring_write - engine._ring_read
         # 256 samples at 48k -> ~85 samples at 16k
-        assert total == 256 // 3
+        assert produced == 256 // 3
 
     def test_process_callback_downsamples_software(self):
         """Software mode: monitor ports + downsampling."""
@@ -129,10 +144,9 @@ class TestJackAudioEngine:
 
         engine._process_callback(256)
 
-        # Should have downsampled data in the frame buffer
-        assert len(engine._frame_buf) > 0
-        total = sum(len(f) for f in engine._frame_buf)
-        assert total == 256 // 3
+        # Should have downsampled data in the ring buffer
+        produced = engine._ring_write - engine._ring_read
+        assert produced == 256 // 3
 
     def test_process_callback_applies_reverb_when_monitoring(self):
         """Software mode: gain+reverb applied to monitor outputs."""
@@ -220,3 +234,161 @@ class TestJackAudioEngine:
         assert not engine._running
         assert engine._jack_proc is None
         mock_proc.terminate.assert_called()
+
+    def test_ds_scratch_is_pre_allocated_and_bounded(self):
+        """Downsample scratch must be pre-allocated and bounded across many callbacks
+        (not grown via np.append)."""
+        config = self._make_config(jack_period=256, monitor_mode="hardware")
+        engine = JackAudioEngine(config)
+        assert hasattr(engine, '_ds_scratch')
+        scratch_id = id(engine._ds_scratch)
+        scratch_size = engine._ds_scratch.size
+        # Bounded: at most period + max leftover (3 - 1) = period + 2
+        assert scratch_size <= 256 + 3
+
+        engine._running = True
+        mic_array = np.ones(256, dtype=np.float32) * 0.1
+        engine._mic_in = MagicMock()
+        engine._mic_in.get_array.return_value = mic_array
+        # Drain ring to avoid wrap concerns
+        for _ in range(500):
+            engine._process_callback(256)
+            engine._ring_read = engine._ring_write
+
+        # Scratch must be the same object and same size
+        assert id(engine._ds_scratch) == scratch_id
+        assert engine._ds_scratch.size == scratch_size
+
+    def test_ring_buffer_pre_allocated(self):
+        """Ring buffer must be pre-allocated in __init__ with stable id."""
+        config = self._make_config(monitor_mode="hardware")
+        engine = JackAudioEngine(config)
+        assert hasattr(engine, '_ring')
+        assert engine._ring.dtype == np.int16
+        ring_id = id(engine._ring)
+
+        engine._running = True
+        mic_array = np.ones(256, dtype=np.float32) * 0.1
+        engine._mic_in = MagicMock()
+        engine._mic_in.get_array.return_value = mic_array
+        for _ in range(50):
+            engine._process_callback(256)
+            engine._ring_read = engine._ring_write
+
+        assert id(engine._ring) == ring_id
+
+    def test_software_monitor_wet_scratch_pre_allocated(self):
+        """Software mode pre-allocates a wet scratch for mic_data * gain."""
+        config = self._make_config(monitor_mode="software", jack_period=256)
+        engine = JackAudioEngine(config)
+        assert hasattr(engine, '_wet_scratch')
+        assert engine._wet_scratch.dtype == np.float32
+        assert engine._wet_scratch.size >= 256
+
+    def test_downsample_correctness_across_callbacks(self):
+        """Refactored downsample produces correct cumulative sample count
+        across multiple callbacks with leftover handling."""
+        config = self._make_config(monitor_mode="hardware", jack_period=256)
+        engine = JackAudioEngine(config)
+        engine._running = True
+        mic_array = np.ones(256, dtype=np.float32) * 0.5
+        engine._mic_in = MagicMock()
+        engine._mic_in.get_array.return_value = mic_array
+
+        # Run 9 callbacks: 9 * 256 = 2304 input samples; 2304 / 3 = 768 output samples
+        for _ in range(9):
+            engine._process_callback(256)
+        produced = engine._ring_write - engine._ring_read
+        assert produced == (9 * 256) // 3
+
+    def test_anti_alias_attenuates_high_frequencies(self):
+        """Anti-aliasing lowpass must strongly attenuate content above ~8kHz
+        before 3:1 decimation, preventing audible aliasing in the 16kHz output."""
+        config = self._make_config(monitor_mode="hardware", jack_period=256)
+        engine = JackAudioEngine(config)
+        engine._running = True
+
+        # Generate a 12kHz sine at 48kHz - well above the 16kHz Nyquist (8kHz)
+        # so it must be heavily attenuated by a proper anti-aliasing filter.
+        rate = 48000
+        block_size = 256
+        n_blocks = 50
+        n_total = block_size * n_blocks
+        t = np.arange(n_total) / rate
+        sig_high = (0.5 * np.sin(2 * np.pi * 12000 * t)).astype(np.float32)
+
+        engine._mic_in = MagicMock()
+        for i in range(n_blocks):
+            chunk = sig_high[i * block_size:(i + 1) * block_size]
+            engine._mic_in.get_array.return_value = chunk
+            engine._process_callback(block_size)
+
+        # Read decimated output from ring (skip first ~10 frames to let the IIR settle)
+        n = engine._ring_write - engine._ring_read
+        out_int16 = np.empty(n, dtype=np.int16)
+        ring_size = engine._ring_size
+        idx = engine._ring_read & (ring_size - 1)
+        for i in range(n):
+            out_int16[i] = engine._ring[(idx + i) & (ring_size - 1)]
+        out_f = out_int16.astype(np.float32) / 32767.0
+        # Drop initial transient
+        out_f = out_f[200:]
+        # The 12kHz tone, after lowpass + decimation, must be far below input level.
+        # Without a filter, aliased content at 4kHz would have ~0.5 amplitude.
+        rms = float(np.sqrt(np.mean(out_f ** 2)))
+        assert rms < 0.05, f"12kHz content not attenuated: rms={rms:.3f}"
+
+    def test_anti_alias_passes_low_frequencies(self):
+        """Anti-aliasing lowpass must preserve content well below the 8kHz cutoff."""
+        config = self._make_config(monitor_mode="hardware", jack_period=256)
+        engine = JackAudioEngine(config)
+        engine._running = True
+
+        rate = 48000
+        block_size = 256
+        n_blocks = 50
+        n_total = block_size * n_blocks
+        t = np.arange(n_total) / rate
+        sig_low = (0.5 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32)
+
+        engine._mic_in = MagicMock()
+        for i in range(n_blocks):
+            chunk = sig_low[i * block_size:(i + 1) * block_size]
+            engine._mic_in.get_array.return_value = chunk
+            engine._process_callback(block_size)
+
+        n = engine._ring_write - engine._ring_read
+        out_int16 = np.empty(n, dtype=np.int16)
+        ring_size = engine._ring_size
+        idx = engine._ring_read & (ring_size - 1)
+        for i in range(n):
+            out_int16[i] = engine._ring[(idx + i) & (ring_size - 1)]
+        out_f = out_int16.astype(np.float32) / 32767.0
+        out_f = out_f[200:]
+        rms = float(np.sqrt(np.mean(out_f ** 2)))
+        # 1kHz signal at 0.5 amplitude has RMS ~0.354; expect minimal attenuation.
+        assert rms > 0.25, f"1kHz content over-attenuated: rms={rms:.3f}"
+
+    def test_ring_buffer_wraps_correctly(self):
+        """Ring buffer correctly handles writes that wrap around its end."""
+        config = self._make_config(monitor_mode="hardware")
+        engine = JackAudioEngine(config)
+        engine._running = True
+
+        # Position write near the end of the ring
+        engine._ring_write = engine._ring_size - 10
+        engine._ring_read = engine._ring_write
+
+        # Write samples that exceed the wrap point
+        samples = np.arange(50, dtype=np.int16)
+        engine._ring_write_samples(samples)
+
+        # Read back via get_frame-style consumption
+        n = engine._ring_write - engine._ring_read
+        assert n == 50
+        # Manually verify wrap content
+        expected_idx_start = engine._ring_read & (engine._ring_size - 1)
+        out = np.empty(50, dtype=np.int16)
+        for i in range(50):
+            out[i] = engine._ring[(expected_idx_start + i) & (engine._ring_size - 1)]
+        np.testing.assert_array_equal(out, samples)

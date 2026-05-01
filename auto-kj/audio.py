@@ -6,7 +6,7 @@ import threading
 import time
 
 import numpy as np
-from scipy.signal import lfilter
+from scipy.signal import butter, lfilter
 
 JACK_RATE = 48000
 JACK_PERIOD = 256
@@ -39,6 +39,15 @@ class SchroederReverb:
             zi = np.zeros(d)
             self._combs.append((b, a, zi))
 
+        # Scratch buffers, lazy-allocated on first process() call (block size
+        # is fixed by JACK period). These let the RT callback avoid np.zeros
+        # allocations on every block.
+        self._scratch_size = 0
+        self._comb_sum = None
+        self._scaled_sig = None
+        self._result_f64 = None
+        self._result_f32 = None
+
         # Allpass filter delays
         ap_delays = [int(d * rate / 44100) for d in [225, 556]]
         ap_gain = 0.5
@@ -66,13 +75,27 @@ class SchroederReverb:
             zi = np.zeros(d)
             self._allpasses.append((b, a, zi))
 
+    def _ensure_scratch(self, n: int) -> None:
+        if self._scratch_size != n:
+            self._comb_sum = np.zeros(n, dtype=np.float64)
+            self._scaled_sig = np.zeros(n, dtype=np.float64)
+            self._result_f64 = np.zeros(n, dtype=np.float64)
+            self._result_f32 = np.zeros(n, dtype=np.float32)
+            self._scratch_size = n
+
     def process(self, block: np.ndarray) -> np.ndarray:
-        """Process a mono float32 block, return wet/dry mix."""
+        """Process a mono float32 block, return wet/dry mix.
+
+        Steady-state allocations are limited to lfilter outputs (4 comb + 2
+        allpass per block); all other arrays are pre-allocated scratch.
+        """
         if self.wet <= 0:
             return block
 
         n = len(block)
-        comb_sum = np.zeros(n, dtype=np.float64)
+        self._ensure_scratch(n)
+        comb_sum = self._comb_sum
+        comb_sum[:] = 0.0
 
         # Parallel comb filters
         for i, (b, a, zi) in enumerate(self._combs):
@@ -88,18 +111,31 @@ class SchroederReverb:
             sig, zi_new = lfilter(b, a, sig, zi=zi)
             self._allpasses[i] = (b, a, zi_new)
 
-        result = block * (1.0 - self.wet) + sig * self.wet
-        return np.clip(result, -1.0, 1.0).astype(np.float32)
+        # result_f64 = block*(1-wet) + sig*wet, all in pre-allocated buffers
+        result = self._result_f64
+        np.multiply(block, 1.0 - self.wet, out=result)
+        np.multiply(sig, self.wet, out=self._scaled_sig)
+        result += self._scaled_sig
+        np.clip(result, -1.0, 1.0, out=result)
+        np.copyto(self._result_f32, result, casting='unsafe')
+        return self._result_f32
 
 
 class JackAudioEngine:
     """Manages JACK server and provides downsampled 16kHz frames for
     wakeword/whisper."""
 
+    # Output ring buffer size in 16kHz int16 samples (~2s at 16kHz).
+    # Power of 2 to allow bitmask wraparound.
+    _RING_SIZE = 32768
+    _RING_MASK = _RING_SIZE - 1
+
     def __init__(self, config):
         self._config = config
         self._jack_proc: subprocess.Popen | None = None
         self._client = None
+
+        period = config.jack_period
 
         # Software monitoring (SchroederReverb through JACK monitor ports)
         self._software_monitor = config.monitor_mode == "software"
@@ -107,11 +143,35 @@ class JackAudioEngine:
             self._reverb = SchroederReverb(JACK_RATE, config.reverb_wet)
             self._gain = config.mic_gain
             self._monitor_muted = False
+            # Pre-allocated scratch for `mic_data * gain` so the RT callback
+            # does not allocate a temporary array per block.
+            self._wet_scratch = np.zeros(period, dtype=np.float32)
 
-        # Downsample buffer: accumulate 48kHz samples, output 16kHz frames
-        self._ds_buf = np.array([], dtype=np.float32)
-        self._frame_buf: list[np.ndarray] = []
-        self._frame_lock = threading.Lock()
+        # Downsample input scratch: holds at most (period + leftover) float32
+        # samples at 48kHz. Leftover is at most 2 (for 3:1 ratio), so size
+        # period + 3 is a safe upper bound. Pre-allocated to avoid np.append
+        # in the JACK process callback.
+        self._ds_scratch = np.zeros(period + 3, dtype=np.float32)
+        self._ds_leftover_n = 0
+        # Float32 scratch for downsample output before int16 quantization.
+        self._ds_f32_scratch = np.zeros(period // 3 + 2, dtype=np.float32)
+
+        # Anti-aliasing lowpass for 48kHz -> 16kHz decimation. Cutoff ~7.5kHz
+        # (below the 16kHz Nyquist of 8kHz) prevents fold-back aliasing that
+        # would otherwise smear sibilants and degrade wakeword/Whisper accuracy.
+        # 4th-order Butterworth keeps the filter cheap (one extra lfilter call
+        # per JACK callback).
+        self._aa_b, self._aa_a = butter(N=4, Wn=7500.0 / (JACK_RATE / 2), btype='low')
+        self._aa_zi = np.zeros(max(len(self._aa_a), len(self._aa_b)) - 1, dtype=np.float64)
+
+        # Output ring buffer for downsampled int16 samples. The producer is
+        # the JACK process callback; the consumer is get_frame(). The ring
+        # is pre-allocated so no per-callback allocation is needed.
+        self._ring_size = self._RING_SIZE
+        self._ring = np.zeros(self._ring_size, dtype=np.int16)
+        self._ring_write = 0  # monotonic counter; index = & _RING_MASK
+        self._ring_read = 0
+        self._ring_lock = threading.Lock()
         self._frame_event = threading.Event()
 
         self._running = False
@@ -200,32 +260,86 @@ class JackAudioEngine:
             print(f"[audio] port connection warning: {e}")
 
     def _process_callback(self, frames):
-        """JACK real-time callback: downsample mic input to 16kHz frames."""
+        """JACK real-time callback: downsample mic input to 16kHz frames.
+
+        Steady-state allocations are limited to lfilter outputs inside
+        SchroederReverb.process; all other buffers are pre-allocated.
+        """
         mic_data = self._mic_in.get_array()
 
         # Software monitoring: apply gain+reverb to monitor outputs
         if self._software_monitor:
             if not self._monitor_muted:
-                wet = mic_data * self._gain
-                wet = self._reverb.process(wet)
-                self._monitor_L.get_array()[:] = wet
-                self._monitor_R.get_array()[:] = wet
+                wet = self._wet_scratch[:frames]
+                np.multiply(mic_data, self._gain, out=wet)
+                processed = self._reverb.process(wet)
+                self._monitor_L.get_array()[:] = processed
+                self._monitor_R.get_array()[:] = processed
             else:
                 self._monitor_L.get_array()[:] = 0
                 self._monitor_R.get_array()[:] = 0
 
-        # Downsample 48kHz -> 16kHz (3:1 ratio) and buffer frames
-        self._ds_buf = np.append(self._ds_buf, mic_data)
-        # Take every 3rd sample for 3:1 downsampling
-        n_out = len(self._ds_buf) // 3
+        # Anti-alias lowpass before decimation. lfilter allocates the output
+        # array (acceptable per the RT criteria); state is carried across
+        # callbacks via self._aa_zi.
+        filtered, self._aa_zi = lfilter(
+            self._aa_b, self._aa_a, mic_data, zi=self._aa_zi
+        )
+
+        # Downsample 48kHz -> 16kHz (3:1 ratio) using fixed scratch buffer.
+        leftover = self._ds_leftover_n
+        n_in = leftover + frames
+        scratch = self._ds_scratch
+        # Append new (filtered) mic samples after any leftover from prior callback.
+        scratch[leftover:n_in] = filtered
+        n_out = n_in // 3
+        consumed = n_out * 3
+        # Move tail leftover to start of scratch for next callback.
+        new_leftover = n_in - consumed
         if n_out > 0:
-            downsampled = self._ds_buf[:n_out * 3:3]
-            self._ds_buf = self._ds_buf[n_out * 3:]
-            # Convert to int16 for wakeword/whisper compatibility
-            int16_data = np.clip(downsampled * 32767, -32768, 32767).astype(np.int16)
-            with self._frame_lock:
-                self._frame_buf.append(int16_data)
-                self._frame_event.set()
+            # Take every 3rd sample (view, no allocation).
+            src = scratch[:consumed:3]
+            f32_out = self._ds_f32_scratch[:n_out]
+            np.multiply(src, 32767.0, out=f32_out)
+            np.clip(f32_out, -32768.0, 32767.0, out=f32_out)
+            self._ring_write_samples_f32(f32_out)
+            self._frame_event.set()
+        if new_leftover > 0:
+            # Slide remainder down. Use a copy to avoid overlapping view issues.
+            scratch[:new_leftover] = scratch[consumed:n_in]
+        self._ds_leftover_n = new_leftover
+
+    def _ring_write_samples_f32(self, f32_samples: np.ndarray) -> None:
+        """Cast float32 samples to int16 and write to the ring buffer."""
+        n = f32_samples.size
+        ring = self._ring
+        size = self._ring_size
+        write = self._ring_write
+        idx = write & self._RING_MASK
+        end = idx + n
+        if end <= size:
+            np.copyto(ring[idx:end], f32_samples, casting='unsafe')
+        else:
+            first = size - idx
+            np.copyto(ring[idx:size], f32_samples[:first], casting='unsafe')
+            np.copyto(ring[:n - first], f32_samples[first:], casting='unsafe')
+        self._ring_write = write + n
+
+    def _ring_write_samples(self, samples: np.ndarray) -> None:
+        """Write int16 samples to the ring buffer (used by tests)."""
+        n = samples.size
+        ring = self._ring
+        size = self._ring_size
+        write = self._ring_write
+        idx = write & self._RING_MASK
+        end = idx + n
+        if end <= size:
+            ring[idx:end] = samples
+        else:
+            first = size - idx
+            ring[idx:size] = samples[:first]
+            ring[:n - first] = samples[first:]
+        self._ring_write = write + n
 
     def _shutdown_callback(self, status, reason):
         print(f"[audio] JACK shutdown: {reason}")
@@ -236,23 +350,32 @@ class JackAudioEngine:
 
         Returns None if the engine is stopped.
         """
-        accumulated = np.array([], dtype=np.int16)
         while self._running:
+            with self._ring_lock:
+                available = self._ring_write - self._ring_read
+            if available >= FRAME_SIZE:
+                return self._read_frame(FRAME_SIZE)
             self._frame_event.wait(timeout=0.1)
             self._frame_event.clear()
-            with self._frame_lock:
-                if self._frame_buf:
-                    accumulated = np.concatenate([accumulated] + self._frame_buf)
-                    self._frame_buf.clear()
-            if len(accumulated) >= FRAME_SIZE:
-                frame = accumulated[:FRAME_SIZE]
-                # Put remainder back
-                remainder = accumulated[FRAME_SIZE:]
-                if len(remainder) > 0:
-                    with self._frame_lock:
-                        self._frame_buf.insert(0, remainder)
-                return frame
         return None
+
+    def _read_frame(self, n: int) -> np.ndarray:
+        """Copy n samples out of the ring buffer, advancing the read pointer."""
+        ring = self._ring
+        size = self._ring_size
+        read = self._ring_read
+        idx = read & self._RING_MASK
+        end = idx + n
+        out = np.empty(n, dtype=np.int16)
+        if end <= size:
+            out[:] = ring[idx:end]
+        else:
+            first = size - idx
+            out[:first] = ring[idx:size]
+            out[first:] = ring[:n - first]
+        with self._ring_lock:
+            self._ring_read = read + n
+        return out
 
     def mute_monitor(self):
         """Mute mic monitoring (e.g. during TTS to prevent feedback)."""

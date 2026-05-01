@@ -94,6 +94,7 @@ class Player:
         self._proc: subprocess.Popen | None = None
         self._idle_proc: subprocess.Popen | None = None
         self._idle_kind: str | None = None  # "image", "refresh", or "black"
+        self._idle_sub_path: str | None = None
         self._idle_cycle_stop: threading.Event | None = None
         self._on_end_callback = None
         self._volume = 100
@@ -225,7 +226,14 @@ class Player:
                 print(f"[player] idle image not found: {_IDLE_IMAGE}")
                 return
             song = random.choice(_SONG_SUGGESTIONS)
+            # Unlink any previously written subtitle to keep /tmp clean.
+            if self._idle_sub_path:
+                try:
+                    os.unlink(self._idle_sub_path)
+                except OSError:
+                    pass
             sub_path = self._write_idle_subtitle(song)
+            self._idle_sub_path = sub_path
             self._idle_proc = subprocess.Popen(
                 [
                     "mpv",
@@ -277,6 +285,12 @@ Dialogue: 0,0:00:00.00,9:00:00.00,Default,,0,0,0,,Try saying\\N{{\\fs56\\i1}}"He
                     self._idle_proc.kill()
             self._idle_proc = None
             self._idle_kind = None
+            if self._idle_sub_path:
+                try:
+                    os.unlink(self._idle_sub_path)
+                except OSError:
+                    pass
+                self._idle_sub_path = None
 
     def hide_idle_image(self):
         """Stop displaying the idle hero image."""
@@ -316,9 +330,12 @@ Dialogue: 0,0:00:00.00,9:00:00.00,Default,,0,0,0,,Try saying\\N{{\\fs56\\i1}}"He
             for line in output.strip().split("\n"):
                 print(f"[player] {line.strip()}")
         with self._lock:
-            if self._proc is proc:
+            is_active = self._proc is proc
+            if is_active:
                 self._proc = None
-        if self._on_end_callback:
+        # Only fire on a natural exit. If proc was replaced by a new _start_mpv,
+        # firing here would advance the queue and skip the song that just started.
+        if is_active and self._on_end_callback:
             self._on_end_callback()
 
     def _send_command(self, *args):

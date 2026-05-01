@@ -1,4 +1,6 @@
+import os
 import pytest
+import threading
 import time
 from datetime import datetime
 from unittest.mock import patch, MagicMock
@@ -215,6 +217,109 @@ def test_show_idle_once_is_idempotent_when_already_showing(mock_popen, mock_exis
     player._show_idle_once()
     assert len(procs) == 1, "should not spawn a second mpv"
     first.terminate.assert_not_called()
+
+
+@patch("playback.Player._is_overnight", return_value=False)
+@patch("playback.os.path.exists", return_value=True)
+@patch("playback.subprocess.Popen")
+def test_idle_subtitle_does_not_leak_temp_files(mock_popen, mock_exists, mock_overnight):
+    """Repeated idle/blank cycles must not leak per-cycle .ass temp files."""
+    procs = []
+
+    def make_proc(*_a, **_kw):
+        p = MagicMock()
+        p.poll.return_value = None
+        procs.append(p)
+        return p
+    mock_popen.side_effect = make_proc
+
+    player = Player()
+    paths = set()
+    # Simulate the hourly idle/blank cycle: image -> blank -> image -> blank ...
+    for _ in range(5):
+        player._show_idle_once()
+        args = mock_popen.call_args[0][0]
+        sub_arg = next((a for a in args if isinstance(a, str) and a.startswith("--sub-file=")), None)
+        if sub_arg:
+            paths.add(sub_arg.split("=", 1)[1])
+        player._blank_screen()
+
+    # Expect 5 distinct subtitle files were generated, only at most one should
+    # still exist on disk (the most recently written one).
+    # Use os.path.isfile (not exists) because os.path.exists is patched.
+    assert len(paths) >= 2, "Test setup failed to produce multiple subtitle files"
+    surviving = [p for p in paths if os.path.isfile(p)]
+    assert len(surviving) <= 1, (
+        f"Idle subtitle temp files leak: {len(surviving)} survived: {surviving}"
+    )
+
+    for p in surviving:
+        try:
+            os.unlink(p)
+        except OSError:
+            pass
+
+
+@patch("playback.subprocess.Popen")
+def test_replacement_does_not_fire_on_end_callback(mock_popen):
+    """When _start_mpv replaces a running song, the old proc's _wait_for_end
+    thread must not fire on_end_callback (which would skip a queued song)."""
+    procs = []
+
+    def make_proc(*_a, **_kw):
+        wait_event = threading.Event()
+        p = MagicMock()
+        p.poll.return_value = None
+        p.returncode = 0
+        p.stdout = None
+        p.wait.side_effect = lambda timeout=None: wait_event.wait(timeout=timeout)
+        p.terminate.side_effect = lambda: wait_event.set()
+        procs.append(p)
+        return p
+    mock_popen.side_effect = make_proc
+
+    callback = MagicMock()
+    player = Player()
+    player.on_song_end(callback)
+
+    # Start first song; thread1 begins waiting on proc1.wait()
+    player.play({"source_type": "karaoke", "video_path": "/a.mp4"})
+    time.sleep(0.05)
+
+    # Replace with second song - this terminates proc1 and starts proc2
+    player.play({"source_type": "karaoke", "video_path": "/b.mp4"})
+    # Allow thread1 to drain
+    time.sleep(0.1)
+
+    # The first proc was terminated as a replacement, not natural song end.
+    # The on_end callback must not have fired (otherwise the queue would skip).
+    callback.assert_not_called()
+
+
+@patch("playback.subprocess.Popen")
+def test_natural_song_end_still_fires_callback(mock_popen):
+    """When a song ends naturally (not replaced), on_end_callback must still fire."""
+    wait_event = threading.Event()
+    proc = MagicMock()
+    proc.poll.return_value = None
+    proc.returncode = 0
+    proc.stdout = None
+    proc.wait.side_effect = lambda timeout=None: wait_event.wait(timeout=timeout)
+    proc.terminate.side_effect = lambda: wait_event.set()
+    mock_popen.return_value = proc
+
+    callback = MagicMock()
+    player = Player()
+    player.on_song_end(callback)
+
+    player.play({"source_type": "karaoke", "video_path": "/a.mp4"})
+    time.sleep(0.05)
+
+    # Song ends naturally (proc exits)
+    wait_event.set()
+    time.sleep(0.1)
+
+    callback.assert_called_once()
 
 
 @patch("playback.datetime")

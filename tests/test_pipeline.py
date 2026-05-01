@@ -1,4 +1,6 @@
 import os
+import threading
+import time
 import pytest
 from unittest.mock import patch, MagicMock
 from songs.pipeline import SongPipeline
@@ -30,6 +32,56 @@ def test_request_cached(pipeline):
     ]
     pipeline.request("Song")
     pipeline.cache.search.assert_called_once()
+
+
+def test_request_dedups_concurrent_same_song(pipeline):
+    """Two back-to-back requests for the same uncached song must result in
+    a single _process_request invocation."""
+    pipeline.cache.search.return_value = []
+
+    started = threading.Event()
+    release = threading.Event()
+    call_count = [0]
+
+    def slow_process(name):
+        call_count[0] += 1
+        started.set()
+        release.wait(timeout=2.0)
+
+    with patch.object(pipeline, "_process_request", side_effect=slow_process):
+        pipeline.request("Song X")
+        assert started.wait(timeout=1.0)
+        # Duplicate before first completes
+        pipeline.request("Song X")
+        # And another with mixed casing/whitespace - should also dedup
+        pipeline.request("  song x  ")
+        release.set()
+        time.sleep(0.15)
+
+    assert call_count[0] == 1
+
+
+def test_request_dedups_uses_normalized_name(pipeline):
+    """Once an in-flight request completes, a fresh request for it should run."""
+    pipeline.cache.search.return_value = []
+
+    call_count = [0]
+    done = threading.Event()
+
+    def quick_process(name):
+        call_count[0] += 1
+        done.set()
+
+    with patch.object(pipeline, "_process_request", side_effect=quick_process):
+        pipeline.request("Song Y")
+        assert done.wait(timeout=1.0)
+        time.sleep(0.05)
+        done.clear()
+        pipeline.request("Song Y")  # in-flight set should be clear by now
+        assert done.wait(timeout=1.0)
+        time.sleep(0.05)
+
+    assert call_count[0] == 2
 
 
 @patch("songs.pipeline.search_song")

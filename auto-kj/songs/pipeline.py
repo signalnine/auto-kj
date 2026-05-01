@@ -12,6 +12,15 @@ class SongPipeline:
         self.queue = queue
         self.speak = speak_fn
         self.cache_dir = cache_dir
+        # Dedup state for concurrent requests. Names are tracked pre-search
+        # (normalized) and youtube_ids post-search.
+        self._in_flight_names: set[str] = set()
+        self._in_flight_ids: set[str] = set()
+        self._dedup_lock = threading.Lock()
+
+    @staticmethod
+    def _normalize(song_name: str) -> str:
+        return " ".join(song_name.lower().split())
 
     def request(self, song_name: str):
         # Check cache first
@@ -20,11 +29,27 @@ class SongPipeline:
             entry = results[0]
             self._enqueue_cached(entry, song_name)
             return
+        # Dedup concurrent requests for the same song name
+        norm = self._normalize(song_name)
+        with self._dedup_lock:
+            if norm in self._in_flight_names:
+                print(f"[pipeline] duplicate request for '{song_name}' ignored")
+                return
+            self._in_flight_names.add(norm)
         # Process in background
         thread = threading.Thread(
-            target=self._process_request, args=(song_name,), daemon=True
+            target=self._run_process_request,
+            args=(song_name, norm),
+            daemon=True,
         )
         thread.start()
+
+    def _run_process_request(self, song_name: str, norm: str):
+        try:
+            self._process_request(song_name)
+        finally:
+            with self._dedup_lock:
+                self._in_flight_names.discard(norm)
 
     def _enqueue_cached(self, entry: dict, song_name: str):
         song = {
@@ -47,6 +72,20 @@ class SongPipeline:
         youtube_id = result["id"]
         is_karaoke = result.get("is_karaoke", False)
 
+        # Post-search dedup: if another request resolved to the same youtube_id
+        # and is already processing it, skip rather than duplicate the work.
+        with self._dedup_lock:
+            if youtube_id in self._in_flight_ids:
+                print(f"[pipeline] duplicate youtube_id '{youtube_id}' already processing")
+                return
+            self._in_flight_ids.add(youtube_id)
+        try:
+            self._process_after_search(song_name, youtube_id, is_karaoke, result)
+        finally:
+            with self._dedup_lock:
+                self._in_flight_ids.discard(youtube_id)
+
+    def _process_after_search(self, song_name: str, youtube_id: str, is_karaoke: bool, result: dict):
         # Download — announce and wait for TTS to finish before starting
         from voice.tts import wait_for_speech
         title = result.get('title', song_name)

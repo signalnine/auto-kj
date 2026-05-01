@@ -32,6 +32,44 @@ def test_search_by_title(cache):
     assert len(results) == 1
     assert results[0]["youtube_id"] == "abc123"
 
+def test_search_escapes_wildcards(cache):
+    cache.add("yt1", {
+        "title": "song_a",
+        "artist": "X",
+        "source_type": "karaoke",
+        "video_path": "yt1/video.mp4",
+    })
+    cache.add("yt2", {
+        "title": "songXa",
+        "artist": "X",
+        "source_type": "karaoke",
+        "video_path": "yt2/video.mp4",
+    })
+    results = cache.search("song_a")
+    ids = {r["youtube_id"] for r in results}
+    assert "yt1" in ids
+    assert "yt2" not in ids
+
+
+def test_search_escapes_percent(cache):
+    cache.add("yt1", {
+        "title": "100% legit",
+        "artist": "X",
+        "source_type": "karaoke",
+        "video_path": "yt1/video.mp4",
+    })
+    cache.add("yt2", {
+        "title": "100 something legit",
+        "artist": "X",
+        "source_type": "karaoke",
+        "video_path": "yt2/video.mp4",
+    })
+    results = cache.search("100% legit")
+    ids = {r["youtube_id"] for r in results}
+    assert "yt1" in ids
+    assert "yt2" not in ids
+
+
 def test_lru_eviction(cache, tmp_path):
     os.makedirs(str(tmp_path / "cache" / "vid1"), exist_ok=True)
     with open(str(tmp_path / "cache" / "vid1" / "video.mp4"), "wb") as f:

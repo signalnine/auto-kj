@@ -48,11 +48,17 @@ class KeyboardHandler:
     def _find_keyboard(self) -> str | None:
         for path in list_devices():
             dev = InputDevice(path)
-            caps = dev.capabilities()
-            if ecodes.EV_KEY in caps:
-                keys = caps[ecodes.EV_KEY]
-                if ecodes.KEY_SPACE in keys and ecodes.KEY_ESC in keys:
-                    return path
+            try:
+                caps = dev.capabilities()
+                if ecodes.EV_KEY in caps:
+                    keys = caps[ecodes.EV_KEY]
+                    if ecodes.KEY_SPACE in keys and ecodes.KEY_ESC in keys:
+                        return path
+            finally:
+                try:
+                    dev.close()
+                except Exception:
+                    pass
         return None
 
     def _listen(self, device_path: str):

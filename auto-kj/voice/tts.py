@@ -1,8 +1,10 @@
+import io
 import os
 import subprocess
 import sys
 import threading
 import queue
+import wave
 
 import numpy as np
 
@@ -37,16 +39,22 @@ def _synth_piper(text: str) -> np.ndarray | None:
     return None
 
 
-def _synth_espeak(text: str) -> np.ndarray | None:
-    """Synthesize text with espeak-ng, return int16 numpy array or None."""
+def _synth_espeak(text: str) -> tuple[np.ndarray, int] | None:
+    """Synthesize text with espeak-ng, return (int16 array, sample_rate) or None."""
     try:
         proc = subprocess.run(
             ["espeak-ng", "--stdout", text],
             capture_output=True, timeout=30,
         )
         if proc.returncode == 0 and proc.stdout:
-            # espeak-ng --stdout produces WAV; skip 44-byte header
-            return np.frombuffer(proc.stdout[44:], dtype=np.int16)
+            with wave.open(io.BytesIO(proc.stdout), "rb") as w:
+                rate = w.getframerate()
+                sampwidth = w.getsampwidth()
+                frames = w.readframes(w.getnframes())
+            if sampwidth != 2:
+                print(f"[tts] espeak unexpected sample width: {sampwidth}")
+                return None
+            return np.frombuffer(frames, dtype=np.int16), rate
     except Exception as e:
         print(f"[tts] espeak error: {e}")
     return None
@@ -64,8 +72,11 @@ def _worker():
                 audio = _synth_piper(text)
                 source_rate = 22050
             else:
-                audio = _synth_espeak(text)
-                source_rate = 22050  # espeak-ng default
+                result = _synth_espeak(text)
+                if result is None:
+                    print(f"[tts] synth returned no audio")
+                    continue
+                audio, source_rate = result
 
             if audio is None or len(audio) == 0:
                 print(f"[tts] synth returned no audio")

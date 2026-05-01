@@ -161,7 +161,7 @@ All settings via environment variables (or `~/.env` when running as a service):
 | `AUTOKJ_CACHE_MAX_BYTES` | `10737418240` | Cache size limit (10GB) |
 | `AUTOKJ_WHISPER_MODEL` | `small` | Whisper model size (tiny/base/small/medium) |
 | `AUTOKJ_WAKEWORD_MODEL` | `~/.auto-kj/models/hey_karaoke.onnx` | Path to custom wakeword model |
-| `AUTOKJ_JACK_DEVICE` | `hw:0,8` | ALSA device for JACK playback (HDMI output) |
+| `AUTOKJ_JACK_DEVICE` | `hw:1,0` | ALSA device for JACK playback (HDMI output) |
 | `AUTOKJ_JACK_MIC_DEVICE` | `hw:2` | ALSA device for USB mic (JACK `-C` capture) |
 | `AUTOKJ_JACK_PERIOD` | `256` | JACK period size (frames) |
 | `AUTOKJ_MONITOR_MODE` | `hardware` | Monitor mode: `hardware` (external amp) or `software` (JACK reverb) |
@@ -233,7 +233,7 @@ python3 -m pytest tests/ -v
 
 **No sound from mic:** Check `AUTOKJ_JACK_MIC_DEVICE` matches your USB mic (`arecord -l`). Verify JACK connections with `jack_lsp -c` while the service is running.
 
-**No sound from playback:** Check `AUTOKJ_JACK_DEVICE` matches your HDMI output (`aplay -l`). Try `speaker-test -D hw:0,8 -c 2` to verify the device works.
+**No sound from playback:** Check `AUTOKJ_JACK_DEVICE` matches your HDMI output (`aplay -l`). Try `speaker-test -D hw:1,0 -c 2` to verify the device works.
 
 **Wakeword not detecting:** Increase `AUTOKJ_WAKEWORD_MODEL` threshold sensitivity, or check mic levels with the `[mic] peak=` log output in journalctl.
 

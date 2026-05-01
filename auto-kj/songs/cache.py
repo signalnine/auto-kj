@@ -61,11 +61,12 @@ class SongCache:
             return dict(row)
 
     def search(self, query: str) -> list[dict]:
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
-                "SELECT * FROM songs WHERE title LIKE ? ORDER BY last_accessed DESC",
-                (f"%{query}%",),
+                "SELECT * FROM songs WHERE title LIKE ? ESCAPE '\\' ORDER BY last_accessed DESC",
+                (f"%{escaped}%",),
             ).fetchall()
             return [dict(r) for r in rows]
 

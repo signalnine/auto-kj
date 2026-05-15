@@ -296,6 +296,61 @@ def test_replacement_does_not_fire_on_end_callback(mock_popen):
     callback.assert_not_called()
 
 
+def test_stop_holds_lock_while_touching_proc():
+    """stop() must acquire self._lock so concurrent _wait_for_end / skip /
+    shutdown observe a coherent snapshot of self._proc."""
+    player = Player()
+    proc = MagicMock()
+    proc.poll.return_value = None
+    player._proc = proc
+
+    lock_held_during_terminate = []
+
+    def terminate_records_lock():
+        # Lock is held -> acquire(blocking=False) returns False.
+        acquired = player._lock.acquire(blocking=False)
+        if acquired:
+            player._lock.release()
+        lock_held_during_terminate.append(not acquired)
+    proc.terminate.side_effect = terminate_records_lock
+
+    player.stop()
+    assert lock_held_during_terminate == [True], (
+        "stop() did not hold self._lock when terminating proc"
+    )
+
+
+@patch("playback.subprocess.Popen")
+def test_concurrent_stop_and_wait_for_end_no_double_callback(mock_popen):
+    """Escape (skip -> stop) racing with natural song end must not fire the
+    on_end callback twice and must not raise."""
+    wait_event = threading.Event()
+    proc = MagicMock()
+    proc.poll.return_value = None
+    proc.returncode = 0
+    proc.stdout = None
+    proc.wait.side_effect = lambda timeout=None: wait_event.wait(timeout=timeout)
+    proc.terminate.side_effect = lambda: wait_event.set()
+    mock_popen.return_value = proc
+
+    callback = MagicMock()
+    player = Player()
+    player.on_song_end(callback)
+    player.play({"source_type": "karaoke", "video_path": "/a.mp4"})
+    time.sleep(0.05)
+
+    # Race: natural end fires at the same time as user-initiated stop.
+    t = threading.Thread(target=player.stop)
+    t.start()
+    wait_event.set()
+    t.join(timeout=2)
+    time.sleep(0.1)
+
+    # The callback gates on `self._proc is proc`. Whichever wins the race,
+    # the callback fires at most once.
+    assert callback.call_count <= 1
+
+
 @patch("playback.subprocess.Popen")
 def test_natural_song_end_still_fires_callback(mock_popen):
     """When a song ends naturally (not replaced), on_end_callback must still fire."""

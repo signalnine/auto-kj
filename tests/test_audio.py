@@ -392,3 +392,142 @@ class TestJackAudioEngine:
         for i in range(50):
             out[i] = engine._ring[(expected_idx_start + i) & (engine._ring_size - 1)]
         np.testing.assert_array_equal(out, samples)
+
+    def test_play_buffer_resamples_with_anti_aliasing(self):
+        """22050 -> 48000 resampling must use a proper anti-aliasing filter
+        rather than nearest-neighbor integer indexing. The bug filed as
+        auto-kj-5hr was that zero-order-hold staircase artifacts brightened
+        sibilants. Verify by feeding a frequency near the source Nyquist and
+        checking that energy above the source Nyquist is well below the
+        passband (proper filtering)."""
+        config = self._make_config(monitor_mode="hardware", jack_period=256)
+        engine = JackAudioEngine(config)
+
+        captured = {}
+        mock_client = MagicMock()
+        out_port = MagicMock()
+        out_port.get_array.return_value = np.zeros(256, dtype=np.float32)
+        mock_client.outports.register.return_value = out_port
+
+        def set_cb(cb):
+            captured["cb"] = cb
+        mock_client.set_process_callback.side_effect = set_cb
+        mock_client.get_ports.return_value = []
+
+        import sys
+        # A 8kHz tone at 22050Hz source rate (well within source Nyquist of
+        # 11025Hz). After resampling to 48kHz, this tone should still be at
+        # 8kHz with no aliased image above 11025Hz.
+        source_rate = 22050
+        n = 4096
+        t = np.arange(n) / source_rate
+        tone = (0.5 * np.sin(2 * np.pi * 8000 * t)).astype(np.float32)
+        # Convert to int16 like real TTS output
+        tone_i16 = (tone * 32767).astype(np.int16)
+
+        captured_resampled = {}
+        original_resample = None
+
+        def capture_resample(audio_data, source_rate):
+            # Capture the resampled buffer by intercepting the audio_data
+            # binding seen by tts_callback. We do this by patching the
+            # callback registration so we can inspect what audio it sees.
+            pass
+
+        sys.modules["jack"].Client = MagicMock(return_value=mock_client)
+        with patch("audio.threading.Event") as mock_event_cls:
+            ev = MagicMock()
+            ev.wait.return_value = True
+            mock_event_cls.return_value = ev
+            with patch("audio.time.sleep"):
+                engine.play_buffer(tone_i16, source_rate)
+
+        cb = captured["cb"]
+        # Drive the callback to capture what's being played
+        played = []
+        captured_arr = np.zeros(256, dtype=np.float32)
+
+        def get_array():
+            return captured_arr
+        out_port.get_array.side_effect = get_array
+
+        # Pull enough frames to span the full resampled buffer
+        # 4096 samples at 22050Hz -> ~8920 samples at 48000Hz -> ~35 callbacks
+        full_signal = []
+        for _ in range(35):
+            cb(256)
+            full_signal.append(captured_arr.copy())
+        full = np.concatenate(full_signal)
+
+        # FFT to check spectrum
+        # Trim to first 8000 samples (well within content) to avoid edge effects
+        section = full[100:8100]
+        if len(section) < 8000:
+            section = full[:8000]
+        section = section - section.mean()
+        spec = np.abs(np.fft.rfft(section * np.hanning(len(section))))
+        freqs = np.fft.rfftfreq(len(section), 1.0 / 48000)
+
+        # Energy in passband around 8kHz (the source tone)
+        pb_mask = (freqs > 7000) & (freqs < 9000)
+        pb_energy = spec[pb_mask].max() if pb_mask.any() else 0.0
+        # Energy above source Nyquist (11025Hz) -- this is where nearest-neighbor
+        # aliasing artifacts would live.
+        sb_mask = (freqs > 12000) & (freqs < 24000)
+        sb_energy = spec[sb_mask].max() if sb_mask.any() else 0.0
+
+        assert pb_energy > 0, "No passband energy detected"
+        rejection_db = 20 * np.log10((sb_energy + 1e-12) / (pb_energy + 1e-12))
+        assert rejection_db < -30, (
+            f"High-frequency aliasing not attenuated: {rejection_db:.1f} dB "
+            f"(expect < -30dB with proper polyphase resampling)"
+        )
+
+    def test_play_buffer_tts_callback_does_not_allocate_per_call(self):
+        """tts_callback registered inside play_buffer must reuse a pre-allocated
+        scratch buffer for the final-partial-block zero pad. The bug filed as
+        auto-kj-zax was that np.zeros(frames, dtype=float32) ran on every
+        partial-tail callback, which can xrun under memory pressure."""
+        config = self._make_config(monitor_mode="hardware", jack_period=256)
+        engine = JackAudioEngine(config)
+
+        captured = {}
+        mock_client = MagicMock()
+        out_port = MagicMock()
+        out_port.get_array.return_value = np.zeros(256, dtype=np.float32)
+        mock_client.outports.register.return_value = out_port
+
+        def set_cb(cb):
+            captured["cb"] = cb
+        mock_client.set_process_callback.side_effect = set_cb
+        mock_client.get_ports.return_value = []
+
+        import sys
+        # Short audio buffer (3 frames worth, last is partial).
+        audio_data = np.ones(700, dtype=np.float32)
+        sys.modules["jack"].Client = MagicMock(return_value=mock_client)
+        with patch("audio.threading.Event") as mock_event_cls:
+            ev = MagicMock()
+            ev.wait.return_value = True
+            mock_event_cls.return_value = ev
+            with patch("audio.time.sleep"):
+                engine.play_buffer(audio_data.copy(), JACK_RATE)
+
+        cb = captured["cb"]
+        zero_calls = []
+        real_zeros = np.zeros
+
+        def counting_zeros(*a, **kw):
+            zero_calls.append((a, kw))
+            return real_zeros(*a, **kw)
+
+        # Fire several partial-tail callbacks; the buffer is shorter than
+        # the period, so every call hits the < frames branch.
+        with patch("audio.np.zeros", side_effect=counting_zeros):
+            for _ in range(10):
+                cb(256)
+
+        # Allocation should happen at most once (lazy) -- not per call.
+        assert len(zero_calls) <= 1, (
+            f"tts_callback allocated padded buffer per call ({len(zero_calls)} times)"
+        )

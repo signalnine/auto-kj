@@ -22,5 +22,5 @@ def fetch_lyrics(title: str, artist: str = "") -> str | None:
 
 
 def save_lrc(content: str, path: str):
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         f.write(content)

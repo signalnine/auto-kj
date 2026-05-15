@@ -6,7 +6,7 @@ import threading
 import time
 
 import numpy as np
-from scipy.signal import butter, lfilter
+from scipy.signal import butter, lfilter, resample_poly
 
 JACK_RATE = 48000
 JACK_PERIOD = 256
@@ -395,17 +395,20 @@ class JackAudioEngine:
         """
         import jack
 
-        # Resample to 48kHz
-        if source_rate != JACK_RATE:
-            ratio = JACK_RATE / source_rate
-            n_out = int(len(audio_data) * ratio)
-            indices = np.arange(n_out) / ratio
-            indices = np.clip(indices, 0, len(audio_data) - 1).astype(int)
-            audio_data = audio_data[indices]
-
-        # Normalize to float32
+        # Normalize to float32 before resampling so polyphase math runs on
+        # floats and the int16 dynamic range isn't corrupted by anti-alias
+        # filter ringing.
         if audio_data.dtype == np.int16:
             audio_data = audio_data.astype(np.float32) / 32768.0
+
+        # Resample to 48kHz via polyphase (scipy.signal.resample_poly) so the
+        # anti-alias filter rolls off above the source Nyquist; the previous
+        # nearest-neighbor integer indexing produced zero-order-hold artifacts.
+        if source_rate != JACK_RATE:
+            g = np.gcd(int(JACK_RATE), int(source_rate))
+            up = int(JACK_RATE) // g
+            down = int(source_rate) // g
+            audio_data = resample_poly(audio_data, up, down).astype(np.float32)
 
         # Play through a short-lived JACK client
         pos = 0
@@ -415,12 +418,21 @@ class JackAudioEngine:
         out_L = client.outports.register("out_L")
         out_R = client.outports.register("out_R")
 
+        # Pre-allocated scratch for the partial-tail pad. Sized lazily on the
+        # first partial callback so we don't need the JACK period up front;
+        # reused thereafter so the JACK RT callback does no allocations.
+        pad_scratch: list[np.ndarray | None] = [None]
+
         def tts_callback(frames):
             nonlocal pos
             chunk = audio_data[pos:pos + frames]
             if len(chunk) < frames:
-                padded = np.zeros(frames, dtype=np.float32)
+                padded = pad_scratch[0]
+                if padded is None or padded.size != frames:
+                    padded = np.zeros(frames, dtype=np.float32)
+                    pad_scratch[0] = padded
                 padded[:len(chunk)] = chunk
+                padded[len(chunk):] = 0.0
                 out_L.get_array()[:] = padded
                 out_R.get_array()[:] = padded
                 done_event.set()

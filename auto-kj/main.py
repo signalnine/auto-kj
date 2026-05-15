@@ -43,6 +43,7 @@ class Karaoke:
 
     def _setup_callbacks(self):
         self.player.on_song_end(self._on_song_end)
+        self.queue.on_add(self._on_queue_song_added)
         # Spacebar pauses mpv to free the mic; unpause on every return to PLAYING.
         self.sm.on_enter(KaraokeState.PLAYING, self.player.resume)
         self.keyboard.on("space", self._on_spacebar)
@@ -230,19 +231,25 @@ If it sounds like they want to play a song, extract the song name with correct s
             print(f"[claude] parse error: {e}", flush=True)
             return ("unknown", None)
 
+    def _on_queue_song_added(self):
+        """Fired by SongQueue when a song lands. Start playback immediately if
+        we're idle. Replaces the old 60-second polling loop in
+        _try_start_playback so songs that take longer than 60s to land in the
+        queue (large download, Spleeter cold start, slow network) still play."""
+        if self.sm.state != KaraokeState.IDLE:
+            return
+        song = self.queue.next()
+        if song is None:
+            return
+        self.sm.transition(KaraokeState.PLAYING)
+        self.player.play(song)
+
     def _try_start_playback(self):
-        """Check queue and start playing if idle."""
-        def _check():
-            time.sleep(2)
-            for _ in range(30):
-                if self.sm.state == KaraokeState.IDLE and not self.queue.is_empty():
-                    song = self.queue.next()
-                    if song:
-                        self.sm.transition(KaraokeState.PLAYING)
-                        self.player.play(song)
-                    return
-                time.sleep(2)
-        threading.Thread(target=_check, daemon=True).start()
+        """Compatibility shim. The actual logic is now event-driven via the
+        SongQueue.on_add callback wired in _setup_callbacks. We still try once
+        immediately in case the song was already cached and added synchronously
+        before the callback was registered (defense in depth)."""
+        self._on_queue_song_added()
 
     def _save_clip(self, tag: str, extra_frames: list[np.ndarray] | None = None):
         """Save the rolling buffer (+ optional extra frames) as a WAV clip."""
@@ -252,7 +259,7 @@ If it sounds like they want to play a song, extract the song name with correct s
         if not frames:
             return
         os.makedirs(self.config.clips_dir, exist_ok=True)
-        ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        ts = datetime.now().strftime("%Y-%m-%d_%H%M%S_%f")
         path = os.path.join(self.config.clips_dir, f"{ts}_{tag}.wav")
         audio = np.concatenate(frames)
         with wave.open(path, "wb") as wf:

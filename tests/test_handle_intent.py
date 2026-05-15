@@ -88,3 +88,39 @@ def test_pause_intent_does_not_resume_player(karaoke):
     assert not karaoke.player.resume.called, (
         "player.resume should not be called for 'pause' intent"
     )
+
+
+def test_queue_song_added_starts_playback_when_idle(karaoke):
+    """Bug auto-kj-nez: when a song lands in the queue while the machine is
+    idle, playback must start immediately (event-driven) -- not via a 60s
+    polling loop that gives up on slow downloads."""
+    song = {"youtube_id": "abc", "title": "Song", "source_type": "karaoke",
+            "video_path": "/v.mp4"}
+    # Real SongQueue (not mocked) so we can exercise the add callback wiring.
+    from queue_manager import SongQueue
+    karaoke.queue = SongQueue()
+    karaoke._setup_callbacks()
+    assert karaoke.sm.state == KaraokeState.IDLE
+
+    karaoke.queue.add(song)
+
+    karaoke.player.play.assert_called_once_with(song)
+    assert karaoke.sm.state == KaraokeState.PLAYING
+
+
+def test_queue_song_added_does_not_interrupt_playing(karaoke):
+    """If the user is already in PLAYING (current song running), a newly-added
+    song must be left in the queue and started when the current song ends, not
+    immediately."""
+    song = {"youtube_id": "abc", "title": "Song", "source_type": "karaoke",
+            "video_path": "/v.mp4"}
+    from queue_manager import SongQueue
+    karaoke.queue = SongQueue()
+    karaoke._setup_callbacks()
+    karaoke.sm.transition(KaraokeState.PLAYING)
+    karaoke.player.play.reset_mock()
+
+    karaoke.queue.add(song)
+
+    karaoke.player.play.assert_not_called()
+    assert karaoke.queue.peek() == song

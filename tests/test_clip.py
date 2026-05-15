@@ -90,3 +90,29 @@ def test_save_clip_empty_buffer(tmp_path):
 
     files = list(tmp_path.glob("*.wav"))
     assert len(files) == 0
+
+
+def test_save_clip_twice_no_collision(tmp_path):
+    """Two _save_clip calls in the same second must produce two distinct files."""
+    config = Config(clips_dir=str(tmp_path))
+
+    from main import Karaoke
+
+    with patch.object(Karaoke, "__init__", lambda self, *a, **kw: None):
+        k = Karaoke.__new__(Karaoke)
+    k.config = config
+    k._clip_buffer = collections.deque(maxlen=25)
+    for _ in range(3):
+        k._clip_buffer.append(np.zeros(1280, dtype=np.int16))
+
+    import main as main_mod
+    original_rate = main_mod.OUTPUT_RATE
+    main_mod.OUTPUT_RATE = 16000
+    try:
+        k._save_clip("missed")
+        k._save_clip("missed")
+    finally:
+        main_mod.OUTPUT_RATE = original_rate
+
+    files = list(tmp_path.glob("*_missed.wav"))
+    assert len(files) == 2

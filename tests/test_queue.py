@@ -39,3 +39,26 @@ def test_skip():
     q.add({"youtube_id": "b", "title": "Song B"})
     q.next()  # consume a
     assert q.next()["youtube_id"] == "b"
+
+
+def test_on_add_callback_fires():
+    """Registering an on_add callback lets the playback controller learn the
+    moment a song lands rather than polling. Bug auto-kj-nez."""
+    q = SongQueue()
+    calls = []
+    q.on_add(lambda: calls.append(1))
+    q.add({"youtube_id": "a", "title": "Song A"})
+    q.add({"youtube_id": "b", "title": "Song B"})
+    assert calls == [1, 1]
+
+
+def test_on_add_called_after_song_visible():
+    """on_add must fire after the song has been appended, so the callback can
+    safely call next()/peek()."""
+    q = SongQueue()
+    seen = []
+    def cb():
+        seen.append(q.peek())
+    q.on_add(cb)
+    q.add({"youtube_id": "a", "title": "Song A"})
+    assert seen == [{"youtube_id": "a", "title": "Song A"}]

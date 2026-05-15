@@ -300,7 +300,7 @@ Dialogue: 0,0:00:00.00,9:00:00.00,Default,,0,0,0,,Try saying\\N{{\\fs56\\i1}}"He
 
     def _start_mpv(self, path: str):
         with self._lock:
-            self.stop()
+            self._stop_locked()
             self._paused = False
             try:
                 os.unlink(_MPV_SOCK)
@@ -363,6 +363,11 @@ Dialogue: 0,0:00:00.00,9:00:00.00,Default,,0,0,0,,Try saying\\N{{\\fs56\\i1}}"He
         self.stop()
 
     def stop(self):
+        with self._lock:
+            self._stop_locked()
+
+    def _stop_locked(self):
+        """Terminate the mpv proc. Caller must hold self._lock."""
         if self._proc and self._proc.poll() is None:
             self._proc.terminate()
             try:
